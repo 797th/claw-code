@@ -4305,9 +4305,9 @@ impl LiveCli {
 
 fn sessions_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
-    let path = cwd.join(".claw").join("sessions");
-    fs::create_dir_all(&path)?;
-    Ok(path)
+    let store = runtime::SessionStore::from_cwd(&cwd)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    Ok(store.sessions_dir().to_path_buf())
 }
 
 fn create_managed_session_handle(
