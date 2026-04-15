@@ -104,12 +104,17 @@ mod tests {
             status: "Finished".to_string(),
             output_file: "/tmp/test.output".to_string(),
             manifest_file: "/tmp/test.manifest".to_string(),
+            session_file: "/tmp/test.session.jsonl".to_string(),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             started_at: Some("2024-01-01T00:00:00Z".to_string()),
             completed_at: Some("2024-01-01T00:00:00Z".to_string()),
             lane_events: vec![],
             derived_state: "working".to_string(),
             current_blocker: None,
+            queued_messages: 0,
+            turn_count: 0,
+            last_prompt: None,
+            last_result: None,
             error: None,
         }
     }

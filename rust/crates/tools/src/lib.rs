@@ -1,6 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, OnceLock,
+};
 use std::time::{Duration, Instant};
 
 use api::{
@@ -581,6 +585,20 @@ pub fn mvp_tool_specs() -> Vec<ToolSpec> {
                     "model": { "type": "string" }
                 },
                 "required": ["description", "prompt"],
+                "additionalProperties": false
+            }),
+            required_permission: PermissionMode::DangerFullAccess,
+        },
+        ToolSpec {
+            name: "SendMessage",
+            description: "Send a follow-up message to a running or resumable background agent.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "to": { "type": "string" },
+                    "message": { "type": "string" }
+                },
+                "required": ["to", "message"],
                 "additionalProperties": false
             }),
             required_permission: PermissionMode::DangerFullAccess,
@@ -1228,6 +1246,7 @@ fn execute_tool_with_enforcer(
         "TodoWrite" => from_value::<TodoWriteInput>(input).and_then(run_todo_write),
         "Skill" => from_value::<SkillInput>(input).and_then(run_skill),
         "Agent" => from_value::<AgentInput>(input).and_then(run_agent),
+        "SendMessage" => from_value::<SendMessageInput>(input).and_then(run_send_message),
         "ToolSearch" => from_value::<ToolSearchInput>(input).and_then(run_tool_search),
         "NotebookEdit" => from_value::<NotebookEditInput>(input).and_then(run_notebook_edit),
         "Sleep" => from_value::<SleepInput>(input).and_then(run_sleep),
@@ -1420,7 +1439,26 @@ fn run_task_get(input: TaskIdInput) -> Result<String, String> {
             "messages": task.messages,
             "team_id": task.team_id
         })),
-        None => Err(format!("task not found: {}", input.task_id)),
+        None => {
+            let agent = load_agent_manifest_from_store(&input.task_id)
+                .map_err(|_| format!("task not found: {}", input.task_id))?;
+            to_pretty_json(json!({
+                "task_id": agent.agent_id,
+                "status": agent.status,
+                "prompt": agent.last_prompt,
+                "description": agent.description,
+                "created_at": agent.created_at,
+                "updated_at": agent.completed_at.as_ref().or(agent.started_at.as_ref()),
+                "messages": [],
+                "team_id": Value::Null,
+                "agent_name": agent.name,
+                "subagent_type": agent.subagent_type,
+                "output_file": agent.output_file,
+                "manifest_file": agent.manifest_file,
+                "queued_messages": agent.queued_messages,
+                "turn_count": agent.turn_count,
+            }))
+        }
     }
 }
 
@@ -1457,7 +1495,55 @@ fn run_task_stop(input: TaskIdInput) -> Result<String, String> {
             "status": task.status,
             "message": "Task stopped"
         })),
-        Err(e) => Err(e),
+        Err(_) => {
+            let agent = load_agent_manifest_from_store(&input.task_id)
+                .map_err(|_| format!("task not found: {}", input.task_id))?;
+            let stop_request = global_agent_registry().request_stop(&agent.agent_id);
+            match stop_request {
+                Ok(request) if request.was_running => to_pretty_json(json!({
+                    "task_id": agent.agent_id,
+                    "status": "stop_requested",
+                    "message": format!(
+                        "Stop requested for agent {}; queued_messages_dropped={}",
+                        agent.name, request.dropped_messages
+                    )
+                })),
+                Ok(_) if is_terminal_agent_status(&agent.status) => Err(format!(
+                    "agent {} is already in terminal state: {}",
+                    agent.agent_id, agent.status
+                )),
+                Ok(_) => {
+                    persist_agent_stopped_state(
+                        &agent,
+                        "Stop requested before the next delegated turn started.",
+                    )?;
+                    to_pretty_json(json!({
+                        "task_id": agent.agent_id,
+                        "status": "stopped",
+                        "message": format!("Agent {} stopped", agent.name)
+                    }))
+                }
+                Err(_) if is_terminal_agent_status(&agent.status) => Err(format!(
+                    "agent {} is already in terminal state: {}",
+                    agent.agent_id, agent.status
+                )),
+                Err(_) if agent.status.eq_ignore_ascii_case("running") => Err(format!(
+                    "agent {} is not attached to the current session and cannot be stopped",
+                    agent.agent_id
+                )),
+                Err(_) => {
+                    persist_agent_stopped_state(
+                        &agent,
+                        "Stop requested before the next delegated turn started.",
+                    )?;
+                    to_pretty_json(json!({
+                        "task_id": agent.agent_id,
+                        "status": "stopped",
+                        "message": format!("Agent {} stopped", agent.name)
+                    }))
+                }
+            }
+        }
     }
 }
 
@@ -1484,7 +1570,17 @@ fn run_task_output(input: TaskIdInput) -> Result<String, String> {
             "output": output,
             "has_output": !output.is_empty()
         })),
-        Err(e) => Err(e),
+        Err(_) => {
+            let agent = load_agent_manifest_from_store(&input.task_id)
+                .map_err(|_| format!("task not found: {}", input.task_id))?;
+            let output =
+                std::fs::read_to_string(&agent.output_file).map_err(|error| error.to_string())?;
+            to_pretty_json(json!({
+                "task_id": agent.agent_id,
+                "output": output,
+                "has_output": !output.is_empty()
+            }))
+        }
     }
 }
 
@@ -2114,6 +2210,10 @@ fn run_agent(input: AgentInput) -> Result<String, String> {
     to_pretty_json(execute_agent(input)?)
 }
 
+fn run_send_message(input: SendMessageInput) -> Result<String, String> {
+    to_pretty_json(execute_send_message(input)?)
+}
+
 fn run_tool_search(input: ToolSearchInput) -> Result<String, String> {
     to_pretty_json(execute_tool_search(input))
 }
@@ -2309,6 +2409,12 @@ struct AgentInput {
     subagent_type: Option<String>,
     name: Option<String>,
     model: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SendMessageInput {
+    to: String,
+    message: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2593,6 +2699,8 @@ struct AgentOutput {
     output_file: String,
     #[serde(rename = "manifestFile")]
     manifest_file: String,
+    #[serde(rename = "sessionFile", default, skip_serializing_if = "String::is_empty")]
+    session_file: String,
     #[serde(rename = "createdAt")]
     created_at: String,
     #[serde(rename = "startedAt", skip_serializing_if = "Option::is_none")]
@@ -2605,6 +2713,14 @@ struct AgentOutput {
     current_blocker: Option<LaneEventBlocker>,
     #[serde(rename = "derivedState")]
     derived_state: String,
+    #[serde(rename = "queuedMessages", default, skip_serializing_if = "is_zero_usize")]
+    queued_messages: usize,
+    #[serde(rename = "turnCount", default, skip_serializing_if = "is_zero_usize")]
+    turn_count: usize,
+    #[serde(rename = "lastPrompt", default, skip_serializing_if = "Option::is_none")]
+    last_prompt: Option<String>,
+    #[serde(rename = "lastResult", default, skip_serializing_if = "Option::is_none")]
+    last_result: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -2615,6 +2731,212 @@ struct AgentJob {
     prompt: String,
     system_prompt: Vec<String>,
     allowed_tools: BTreeSet<String>,
+}
+
+#[derive(Debug, Default)]
+struct AgentControlRegistry {
+    inner: Mutex<AgentControlRegistryInner>,
+}
+
+#[derive(Debug, Default)]
+struct AgentControlRegistryInner {
+    controls: HashMap<String, AgentControlState>,
+    names: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+struct AgentControlState {
+    name: String,
+    manifest_file: String,
+    output_file: String,
+    session_file: String,
+    queued_prompts: VecDeque<String>,
+    running: bool,
+    stop_requested: Arc<AtomicBool>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AgentStopRequest {
+    was_running: bool,
+    dropped_messages: usize,
+}
+
+impl AgentControlState {
+    fn from_manifest(manifest: &AgentOutput) -> Self {
+        Self {
+            name: manifest.name.clone(),
+            manifest_file: manifest.manifest_file.clone(),
+            output_file: manifest.output_file.clone(),
+            session_file: manifest.session_file.clone(),
+            queued_prompts: VecDeque::new(),
+            running: false,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn refresh_from_manifest(&mut self, manifest: &AgentOutput) {
+        self.name = manifest.name.clone();
+        self.manifest_file = manifest.manifest_file.clone();
+        self.output_file = manifest.output_file.clone();
+        self.session_file = manifest.session_file.clone();
+    }
+}
+
+impl AgentControlRegistry {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn register_manifest(&self, manifest: &AgentOutput) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let agent_id = manifest.agent_id.clone();
+        let name = manifest.name.to_ascii_lowercase();
+        {
+            let control = inner
+                .controls
+                .entry(agent_id.clone())
+                .or_insert_with(|| AgentControlState::from_manifest(manifest));
+            control.refresh_from_manifest(manifest);
+        }
+        inner.names.insert(name, agent_id);
+    }
+
+    fn resolve_name(&self, name: &str) -> Option<String> {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner.names.get(&name.to_ascii_lowercase()).cloned()
+    }
+
+    fn is_running(&self, agent_id: &str) -> bool {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner.controls.get(agent_id).is_some_and(|control| control.running)
+    }
+
+    fn enqueue_prompt(&self, manifest: &AgentOutput, prompt: String) -> Result<bool, String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let agent_id = manifest.agent_id.clone();
+        let name = manifest.name.to_ascii_lowercase();
+        let should_spawn = {
+            let control = inner
+                .controls
+                .entry(agent_id.clone())
+                .or_insert_with(|| AgentControlState::from_manifest(manifest));
+            control.refresh_from_manifest(manifest);
+            control.queued_prompts.push_back(prompt);
+            let should_spawn = !control.running;
+            if should_spawn {
+                control.running = true;
+                control.stop_requested.store(false, Ordering::SeqCst);
+            }
+            should_spawn
+        }
+        inner.names.insert(name, agent_id);
+        Ok(should_spawn)
+    }
+
+    fn dequeue_prompt(&self, agent_id: &str) -> Result<Option<String>, String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let control = inner
+            .controls
+            .get_mut(agent_id)
+            .ok_or_else(|| format!("agent not registered: {agent_id}"))?;
+        Ok(control.queued_prompts.pop_front())
+    }
+
+    fn queued_len(&self, agent_id: &str) -> usize {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner
+            .controls
+            .get(agent_id)
+            .map_or(0, |control| control.queued_prompts.len())
+    }
+
+    fn stop_requested(&self, agent_id: &str) -> bool {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner.controls.get(agent_id).is_some_and(|control| {
+            control.stop_requested.load(Ordering::SeqCst)
+        })
+    }
+
+    fn request_stop(&self, agent_id: &str) -> Result<AgentStopRequest, String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let control = inner
+            .controls
+            .get_mut(agent_id)
+            .ok_or_else(|| format!("agent not registered: {agent_id}"))?;
+        let request = AgentStopRequest {
+            was_running: control.running,
+            dropped_messages: control.queued_prompts.len(),
+        };
+        control.stop_requested.store(true, Ordering::SeqCst);
+        control.queued_prompts.clear();
+        Ok(request)
+    }
+
+    fn clear_pending(&self, agent_id: &str) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(control) = inner.controls.get_mut(agent_id) {
+            control.queued_prompts.clear();
+            control.running = false;
+            control.stop_requested.store(false, Ordering::SeqCst);
+        }
+    }
+
+    fn mark_idle(&self, agent_id: &str) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(control) = inner.controls.get_mut(agent_id) {
+            control.running = false;
+        }
+    }
+}
+
+fn global_agent_registry() -> &'static AgentControlRegistry {
+    static REGISTRY: OnceLock<AgentControlRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(AgentControlRegistry::new)
+}
+
+#[derive(Debug, Serialize)]
+struct SendMessageOutput {
+    success: bool,
+    #[serde(rename = "agentId")]
+    agent_id: String,
+    name: String,
+    status: String,
+    delivery: String,
+    #[serde(rename = "outputFile")]
+    output_file: String,
+    #[serde(rename = "manifestFile")]
+    manifest_file: String,
+    message: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -3475,7 +3797,54 @@ const DEFAULT_AGENT_SYSTEM_DATE: &str = "2026-03-31";
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 32;
 
 fn execute_agent(input: AgentInput) -> Result<AgentOutput, String> {
-    execute_agent_with_spawn(input, spawn_agent_job)
+    execute_agent_with_spawn(input, queue_agent_job)
+}
+
+fn execute_send_message(input: SendMessageInput) -> Result<SendMessageOutput, String> {
+    execute_send_message_with_spawn(input, queue_agent_job)
+}
+
+fn execute_send_message_with_spawn<F>(
+    input: SendMessageInput,
+    spawn_fn: F,
+) -> Result<SendMessageOutput, String>
+where
+    F: FnOnce(AgentJob) -> Result<(), String>,
+{
+    if input.to.trim().is_empty() {
+        return Err(String::from("to must not be empty"));
+    }
+    if input.message.trim().is_empty() {
+        return Err(String::from("message must not be empty"));
+    }
+
+    let manifest = resolve_agent_manifest(&input.to)?;
+    let normalized_subagent_type = normalize_subagent_type(manifest.subagent_type.as_deref());
+    let delivery = if global_agent_registry().is_running(&manifest.agent_id) {
+        "queued"
+    } else {
+        "resumed"
+    };
+    let job = AgentJob {
+        manifest: manifest.clone(),
+        prompt: input.message,
+        system_prompt: build_agent_system_prompt(&normalized_subagent_type)?,
+        allowed_tools: allowed_tools_for_subagent(&normalized_subagent_type),
+    };
+
+    spawn_fn(job)
+        .map_err(|error| format!("failed to deliver message to {}: {error}", manifest.agent_id))?;
+
+    Ok(SendMessageOutput {
+        success: true,
+        agent_id: manifest.agent_id,
+        name: manifest.name,
+        status: String::from("running"),
+        delivery: delivery.to_string(),
+        output_file: manifest.output_file,
+        manifest_file: manifest.manifest_file,
+        message: String::from("Follow-up accepted"),
+    })
 }
 
 fn execute_agent_with_spawn<F>(input: AgentInput, spawn_fn: F) -> Result<AgentOutput, String>
@@ -3494,6 +3863,7 @@ where
     std::fs::create_dir_all(&output_dir).map_err(|error| error.to_string())?;
     let output_file = output_dir.join(format!("{agent_id}.md"));
     let manifest_file = output_dir.join(format!("{agent_id}.json"));
+    let session_file = output_dir.join(format!("{agent_id}.session.jsonl"));
     let normalized_subagent_type = normalize_subagent_type(input.subagent_type.as_deref());
     let model = resolve_agent_model(input.model.as_deref());
     let agent_name = input
@@ -3532,12 +3902,17 @@ where
         status: String::from("running"),
         output_file: output_file.display().to_string(),
         manifest_file: manifest_file.display().to_string(),
+        session_file: session_file.display().to_string(),
         created_at: created_at.clone(),
         started_at: Some(created_at),
         completed_at: None,
         lane_events: vec![LaneEvent::started(iso8601_now())],
         current_blocker: None,
         derived_state: String::from("working"),
+        queued_messages: 0,
+        turn_count: 0,
+        last_prompt: Some(input.prompt.clone()),
+        last_result: None,
         error: None,
     };
     write_agent_manifest(&manifest)?;
@@ -3558,26 +3933,40 @@ where
     Ok(manifest)
 }
 
-fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
+fn queue_agent_job(job: AgentJob) -> Result<(), String> {
+    global_agent_registry().register_manifest(&job.manifest);
+    let should_spawn = global_agent_registry().enqueue_prompt(&job.manifest, job.prompt)?;
+    if !should_spawn {
+        return Ok(());
+    }
+
     let thread_name = format!("clawd-agent-{}", job.manifest.agent_id);
+    let agent_id = job.manifest.agent_id.clone();
     std::thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_agent_job(&job)));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_agent_worker_loop(&agent_id)
+            }));
             match result {
                 Ok(Ok(())) => {}
                 Ok(Err(error)) => {
-                    let _ =
-                        persist_agent_terminal_state(&job.manifest, "failed", None, Some(error));
+                    if let Ok(manifest) = load_agent_manifest_from_store(&agent_id) {
+                        let _ =
+                            persist_agent_terminal_state(&manifest, "failed", None, Some(error));
+                    }
+                    global_agent_registry().clear_pending(&agent_id);
                 }
                 Err(_) => {
-                    let _ = persist_agent_terminal_state(
-                        &job.manifest,
-                        "failed",
-                        None,
-                        Some(String::from("sub-agent thread panicked")),
-                    );
+                    if let Ok(manifest) = load_agent_manifest_from_store(&agent_id) {
+                        let _ = persist_agent_terminal_state(
+                            &manifest,
+                            "failed",
+                            None,
+                            Some(String::from("sub-agent thread panicked")),
+                        );
+                    }
+                    global_agent_registry().clear_pending(&agent_id);
                 }
             }
         })
@@ -3585,13 +3974,103 @@ fn spawn_agent_job(job: AgentJob) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-fn run_agent_job(job: &AgentJob) -> Result<(), String> {
+fn run_agent_worker_loop(agent_id: &str) -> Result<(), String> {
+    loop {
+        if global_agent_registry().stop_requested(agent_id) {
+            if let Ok(manifest) = load_agent_manifest_from_store(agent_id) {
+                persist_agent_stopped_state(
+                    &manifest,
+                    "Stop requested before the next delegated turn started.",
+                )?;
+            }
+            global_agent_registry().mark_idle(agent_id);
+            return Ok(());
+        }
+
+        let Some(prompt) = global_agent_registry().dequeue_prompt(agent_id)? else {
+            global_agent_registry().mark_idle(agent_id);
+            return Ok(());
+        };
+
+        let manifest = load_agent_manifest_from_store(agent_id)?;
+        let queued_after_dequeue = global_agent_registry().queued_len(agent_id);
+        let running_manifest =
+            persist_agent_running_state(&manifest, &prompt, queued_after_dequeue)?;
+        let job = build_agent_job_from_manifest(&running_manifest, prompt)?;
+
+        match execute_agent_turn(&job) {
+            Ok(final_text) => {
+                let current_manifest = load_agent_manifest_from_store(agent_id)?;
+                let queued_remaining = global_agent_registry().queued_len(agent_id);
+                if queued_remaining > 0 {
+                    persist_agent_intermediate_success(
+                        &current_manifest,
+                        final_text.as_str(),
+                        queued_remaining,
+                    )?;
+                    continue;
+                }
+                persist_agent_terminal_state(
+                    &current_manifest,
+                    "completed",
+                    Some(final_text.as_str()),
+                    None,
+                )?;
+            }
+            Err(error) => {
+                let current_manifest = load_agent_manifest_from_store(agent_id)
+                    .unwrap_or_else(|_| running_manifest.clone());
+                persist_agent_terminal_state(&current_manifest, "failed", None, Some(error))?;
+                global_agent_registry().clear_pending(agent_id);
+                return Ok(());
+            }
+        }
+    }
+}
+
+fn build_agent_job_from_manifest(
+    manifest: &AgentOutput,
+    prompt: String,
+) -> Result<AgentJob, String> {
+    let normalized_subagent_type = normalize_subagent_type(manifest.subagent_type.as_deref());
+    Ok(AgentJob {
+        manifest: manifest.clone(),
+        prompt,
+        system_prompt: build_agent_system_prompt(&normalized_subagent_type)?,
+        allowed_tools: allowed_tools_for_subagent(&normalized_subagent_type),
+    })
+}
+
+fn execute_agent_turn(job: &AgentJob) -> Result<String, String> {
     let mut runtime = build_agent_runtime(job)?.with_max_iterations(DEFAULT_AGENT_MAX_ITERATIONS);
     let summary = runtime
         .run_turn(job.prompt.clone(), None)
         .map_err(|error| error.to_string())?;
-    let final_text = final_assistant_text(&summary);
-    persist_agent_terminal_state(&job.manifest, "completed", Some(final_text.as_str()), None)
+    Ok(final_assistant_text(&summary))
+}
+
+fn load_or_create_agent_session(manifest: &AgentOutput) -> Result<Session, String> {
+    let session_path = if manifest.session_file.trim().is_empty() {
+        agent_store_dir()?.join(format!("{}.session.jsonl", manifest.agent_id))
+    } else {
+        PathBuf::from(&manifest.session_file)
+    };
+
+    if session_path.is_file() {
+        return Session::load_from_path(&session_path).map_err(|error| error.to_string());
+    }
+
+    if let Some(parent) = session_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let cwd = std::env::current_dir().map_err(|error| error.to_string())?;
+    let session = Session::new()
+        .with_workspace_root(cwd)
+        .with_persistence_path(&session_path);
+    session
+        .save_to_path(&session_path)
+        .map_err(|error| error.to_string())?;
+    Ok(session)
 }
 
 fn build_agent_runtime(
@@ -3603,12 +4082,13 @@ fn build_agent_runtime(
         .clone()
         .unwrap_or_else(|| DEFAULT_AGENT_MODEL.to_string());
     let allowed_tools = job.allowed_tools.clone();
+    let session = load_or_create_agent_session(&job.manifest)?;
     let api_client = ProviderRuntimeClient::new(model, allowed_tools.clone())?;
     let permission_policy = agent_permission_policy();
     let tool_executor = SubagentToolExecutor::new(allowed_tools)
         .with_enforcer(PermissionEnforcer::new(permission_policy.clone()));
     Ok(ConversationRuntime::new(
-        Session::new(),
+        session,
         api_client,
         tool_executor,
         permission_policy,
@@ -3727,6 +4207,67 @@ fn agent_permission_policy() -> PermissionPolicy {
     )
 }
 
+fn load_agent_manifest(path: impl AsRef<Path>) -> Result<AgentOutput, String> {
+    let contents = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+    serde_json::from_str(&contents).map_err(|error| error.to_string())
+}
+
+fn load_agent_manifest_from_store(agent_id: &str) -> Result<AgentOutput, String> {
+    let path = agent_store_dir()?.join(format!("{agent_id}.json"));
+    load_agent_manifest(path)
+}
+
+fn read_all_agent_manifests() -> Result<Vec<AgentOutput>, String> {
+    let dir = agent_store_dir()?;
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut manifests = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(manifest) = load_agent_manifest(&path) {
+            manifests.push(manifest);
+        }
+    }
+    Ok(manifests)
+}
+
+fn resolve_agent_manifest(reference: &str) -> Result<AgentOutput, String> {
+    let trimmed = reference.trim();
+    if trimmed.is_empty() {
+        return Err(String::from("agent reference must not be empty"));
+    }
+
+    if let Some(agent_id) = global_agent_registry().resolve_name(trimmed) {
+        if let Ok(manifest) = load_agent_manifest_from_store(&agent_id) {
+            return Ok(manifest);
+        }
+    }
+
+    if let Ok(manifest) = load_agent_manifest_from_store(trimmed) {
+        return Ok(manifest);
+    }
+
+    let manifests = read_all_agent_manifests()?;
+    manifests
+        .into_iter()
+        .filter(|manifest| manifest.name.eq_ignore_ascii_case(trimmed))
+        .max_by_key(|manifest| {
+            manifest
+                .completed_at
+                .as_deref()
+                .unwrap_or(manifest.created_at.as_str())
+                .parse::<u64>()
+                .unwrap_or(0)
+        })
+        .ok_or_else(|| format!("agent not found: {trimmed}"))
+}
+
 fn write_agent_manifest(manifest: &AgentOutput) -> Result<(), String> {
     let mut normalized = manifest.clone();
     normalized.lane_events = dedupe_superseded_commit_events(&normalized.lane_events);
@@ -3735,6 +4276,56 @@ fn write_agent_manifest(manifest: &AgentOutput) -> Result<(), String> {
         serde_json::to_string_pretty(&normalized).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())
+}
+
+fn persist_agent_running_state(
+    manifest: &AgentOutput,
+    prompt: &str,
+    queued_messages: usize,
+) -> Result<AgentOutput, String> {
+    let turn_number = manifest.turn_count.saturating_add(1);
+    append_agent_output(
+        &manifest.output_file,
+        &format!("\n## Turn {turn_number}\n\n### User message\n\n{}\n", prompt.trim()),
+    )?;
+
+    let mut next_manifest = manifest.clone();
+    next_manifest.status = String::from("running");
+    next_manifest.started_at = Some(iso8601_now());
+    next_manifest.completed_at = None;
+    next_manifest.current_blocker = None;
+    next_manifest.derived_state = String::from("working");
+    next_manifest.queued_messages = queued_messages;
+    next_manifest.last_prompt = Some(prompt.trim().to_string());
+    next_manifest.error = None;
+    write_agent_manifest(&next_manifest)?;
+    Ok(next_manifest)
+}
+
+fn persist_agent_intermediate_success(
+    manifest: &AgentOutput,
+    result: &str,
+    queued_messages: usize,
+) -> Result<(), String> {
+    append_agent_output(
+        &manifest.output_file,
+        &format!(
+            "\n### Final response\n\n{}\n\n### Queue\n\n- pending_messages: {}\n",
+            result.trim(),
+            queued_messages
+        ),
+    )?;
+
+    let mut next_manifest = manifest.clone();
+    next_manifest.status = String::from("running");
+    next_manifest.completed_at = None;
+    next_manifest.current_blocker = None;
+    next_manifest.derived_state = String::from("working");
+    next_manifest.error = None;
+    next_manifest.queued_messages = queued_messages;
+    next_manifest.turn_count = next_manifest.turn_count.saturating_add(1);
+    next_manifest.last_result = Some(result.trim().to_string());
+    write_agent_manifest(&next_manifest)
 }
 
 fn persist_agent_terminal_state(
@@ -3754,6 +4345,12 @@ fn persist_agent_terminal_state(
     next_manifest.current_blocker.clone_from(&blocker);
     next_manifest.derived_state =
         derive_agent_state(status, result, error.as_deref(), blocker.as_ref()).to_string();
+    next_manifest.queued_messages = 0;
+    next_manifest.turn_count = next_manifest.turn_count.saturating_add(1);
+    next_manifest.last_result = result
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     next_manifest.error = error;
     if let Some(blocker) = blocker {
         next_manifest
@@ -3780,6 +4377,22 @@ fn persist_agent_terminal_state(
             ));
         }
     }
+    write_agent_manifest(&next_manifest)
+}
+
+fn persist_agent_stopped_state(manifest: &AgentOutput, detail: &str) -> Result<(), String> {
+    append_agent_output(
+        &manifest.output_file,
+        &format!("\n### Stop requested\n\n{}\n", detail.trim()),
+    )?;
+
+    let mut next_manifest = manifest.clone();
+    next_manifest.status = String::from("stopped");
+    next_manifest.completed_at = Some(iso8601_now());
+    next_manifest.current_blocker = None;
+    next_manifest.derived_state = String::from("truly_idle");
+    next_manifest.error = None;
+    next_manifest.queued_messages = 0;
     write_agent_manifest(&next_manifest)
 }
 
@@ -4352,7 +4965,7 @@ fn derive_agent_state(
     let normalized_status = status.trim().to_ascii_lowercase();
     let normalized_error = error.unwrap_or_default().to_ascii_lowercase();
 
-    if normalized_status == "running" {
+    if normalized_status == "running" || normalized_status == "queued" {
         return "working";
     }
     if normalized_status == "completed" {
@@ -4361,6 +4974,9 @@ fn derive_agent_state(
         } else {
             "finished_pending_report"
         };
+    }
+    if normalized_status == "stopped" {
+        return "truly_idle";
     }
     if normalized_error.contains("background") {
         return "blocked_background_job";
@@ -5040,6 +5656,17 @@ fn normalize_subagent_type(subagent_type: Option<&str>) -> String {
         "statusline" | "statuslinesetup" => String::from("statusline-setup"),
         _ => trimmed.to_string(),
     }
+}
+
+fn is_zero_usize(value: &usize) -> bool {
+    *value == 0
+}
+
+fn is_terminal_agent_status(status: &str) -> bool {
+    matches!(
+        status.trim().to_ascii_lowercase().as_str(),
+        "completed" | "failed" | "stopped"
+    )
 }
 
 fn iso8601_now() -> String {
@@ -6126,12 +6753,14 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        agent_permission_policy, allowed_tools_for_subagent, classify_lane_failure,
-        derive_agent_state, execute_agent_with_spawn, execute_tool, extract_recovery_outcome,
-        final_assistant_text, global_cron_registry, maybe_commit_provenance, mvp_tool_specs,
-        permission_mode_from_plugin, persist_agent_terminal_state, push_output_block,
-        run_task_packet, AgentInput, AgentJob, GlobalToolRegistry, LaneEventName, LaneFailureClass,
-        ProviderRuntimeClient, SubagentToolExecutor,
+        agent_permission_policy, allowed_tools_for_subagent, append_agent_output,
+        classify_lane_failure, derive_agent_state, execute_agent_with_spawn,
+        execute_send_message_with_spawn, execute_tool, extract_recovery_outcome,
+        final_assistant_text, global_agent_registry, global_cron_registry,
+        maybe_commit_provenance, mvp_tool_specs, permission_mode_from_plugin,
+        persist_agent_terminal_state, push_output_block, run_task_output, run_task_packet,
+        run_task_stop, AgentInput, AgentJob, GlobalToolRegistry, LaneEventName, LaneFailureClass,
+        ProviderRuntimeClient, SendMessageInput, SubagentToolExecutor, TaskIdInput,
     };
     use api::OutputContentBlock;
     use runtime::ProviderFallbackConfig;
@@ -7758,6 +8387,10 @@ mod tests {
         assert!(contents.contains("Check tests and outstanding work."));
         assert!(manifest_contents.contains("\"subagentType\": \"Explore\""));
         assert!(manifest_contents.contains("\"status\": \"running\""));
+        assert_eq!(
+            manifest_json["sessionFile"],
+            serde_json::Value::String(manifest.session_file.clone())
+        );
         assert_eq!(manifest_json["laneEvents"][0]["event"], "lane.started");
         assert_eq!(manifest_json["laneEvents"][0]["status"], "running");
         assert!(manifest_json["currentBlocker"].is_null());
@@ -7794,6 +8427,141 @@ mod tests {
         .expect("Agent should normalize explicit names");
         let named_output: serde_json::Value = serde_json::from_str(&named).expect("valid json");
         assert_eq!(named_output["name"], "ship-audit");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn send_message_reuses_existing_agent_manifest() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = temp_path("agent-followup");
+        std::env::set_var("CLAWD_AGENT_STORE", &dir);
+
+        let manifest = execute_agent_with_spawn(
+            AgentInput {
+                description: "Audit the branch".to_string(),
+                prompt: "Check tests and outstanding work.".to_string(),
+                subagent_type: Some("Explore".to_string()),
+                name: Some("ship-audit".to_string()),
+                model: None,
+            },
+            |_job| Ok(()),
+        )
+        .expect("initial agent launch should succeed");
+
+        let captured = Arc::new(Mutex::new(None::<AgentJob>));
+        let captured_for_spawn = Arc::clone(&captured);
+        let response = execute_send_message_with_spawn(
+            SendMessageInput {
+                to: "ship-audit".to_string(),
+                message: "Tighten the verification plan.".to_string(),
+            },
+            move |job| {
+                *captured_for_spawn
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(job);
+                Ok(())
+            },
+        )
+        .expect("SendMessage should succeed");
+
+        assert_eq!(response.agent_id, manifest.agent_id);
+        assert_eq!(response.name, manifest.name);
+        assert_eq!(response.delivery, "resumed");
+        let captured_job = captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .expect("spawn job should be captured");
+        assert_eq!(captured_job.manifest.agent_id, manifest.agent_id);
+        assert_eq!(captured_job.manifest.session_file, manifest.session_file);
+        assert_eq!(captured_job.prompt, "Tighten the verification plan.");
+
+        std::env::remove_var("CLAWD_AGENT_STORE");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn task_output_reads_agent_output_files() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = temp_path("agent-task-output");
+        std::env::set_var("CLAWD_AGENT_STORE", &dir);
+
+        let manifest = execute_agent_with_spawn(
+            AgentInput {
+                description: "Collect output".to_string(),
+                prompt: "Produce an output artifact.".to_string(),
+                subagent_type: None,
+                name: Some("artifact-lane".to_string()),
+                model: None,
+            },
+            |_job| Ok(()),
+        )
+        .expect("Agent should succeed");
+
+        append_agent_output(&manifest.output_file, "\n### Final response\n\nhello from agent\n")
+            .expect("output append should succeed");
+
+        let response = run_task_output(TaskIdInput {
+            task_id: manifest.agent_id.clone(),
+        })
+        .expect("TaskOutput should read agent output");
+        let payload: serde_json::Value = serde_json::from_str(&response).expect("valid json");
+        assert_eq!(payload["task_id"], manifest.agent_id);
+        assert!(
+            payload["output"]
+                .as_str()
+                .expect("output text")
+                .contains("hello from agent")
+        );
+
+        std::env::remove_var("CLAWD_AGENT_STORE");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn task_stop_handles_live_agent_control_entries() {
+        let _guard = env_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = temp_path("agent-task-stop");
+        std::env::set_var("CLAWD_AGENT_STORE", &dir);
+
+        let manifest = execute_agent_with_spawn(
+            AgentInput {
+                description: "Stop me".to_string(),
+                prompt: "Wait for follow-up work.".to_string(),
+                subagent_type: Some("Explore".to_string()),
+                name: Some("stop-me".to_string()),
+                model: None,
+            },
+            |_job| Ok(()),
+        )
+        .expect("Agent should succeed");
+
+        global_agent_registry().register_manifest(&manifest);
+        let should_spawn = global_agent_registry()
+            .enqueue_prompt(&manifest, "queued follow-up".to_string())
+            .expect("queue should succeed");
+        assert!(should_spawn, "agent should transition into running state");
+
+        let response = run_task_stop(TaskIdInput {
+            task_id: manifest.agent_id.clone(),
+        })
+        .expect("TaskStop should stop live agent controls");
+        let payload: serde_json::Value = serde_json::from_str(&response).expect("valid json");
+        assert_eq!(payload["status"], "stop_requested");
+        assert!(
+            payload["message"]
+                .as_str()
+                .expect("stop message")
+                .contains("queued_messages_dropped=1")
+        );
+
+        std::env::remove_var("CLAWD_AGENT_STORE");
         let _ = std::fs::remove_dir_all(dir);
     }
 
