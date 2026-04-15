@@ -33,6 +33,20 @@ cargo build --workspace
 
 The CLI binary is available at `rust/target/debug/claw` after a debug build. Make the doctor check above your first post-build step.
 
+On Windows, the workspace also builds `rust/target/debug/cli797.exe`. When launched as `cli797`, the CLI keeps the directory you launched from as the active workspace, defaults to `danger-full-access`, and allows broad-CWD runs.
+
+## Windows global launcher (`cli797`)
+
+If you want a Claude Code-style global command from any terminal window:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\install-cli797.ps1 -Profile release
+cli797
+```
+
+The installer builds `cli797.exe`, copies it into a user-level bin directory, and adds that directory to your PATH when needed. After installation, running `cli797` from `C:\some\project` starts the CLI in `C:\some\project`.
+
 ## Quick start
 
 ### First-run doctor check
@@ -79,6 +93,13 @@ cd rust
 ./target/debug/claw --permission-mode read-only prompt "summarize Cargo.toml"
 ./target/debug/claw --permission-mode workspace-write prompt "update README.md"
 ./target/debug/claw --allowedTools read,glob "inspect the runtime crate"
+```
+
+`cli797` bakes in the broad/full-access defaults already, so a Windows install launched through `cli797` behaves like:
+
+```powershell
+cli797
+cli797 prompt "review this repository"
 ```
 
 Supported permission modes:

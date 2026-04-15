@@ -98,6 +98,7 @@ const CLI_OPTION_SUGGESTIONS: &[&str] = &[
     "--print",
     "--compact",
     "--base-commit",
+    "--allow-broad-cwd",
     "-p",
 ];
 
@@ -106,6 +107,12 @@ type RuntimePluginStateBuildOutput = (
     Option<Arc<Mutex<RuntimeMcpState>>>,
     Vec<RuntimeToolDefinition>,
 );
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct LauncherDefaults {
+    permission_mode_override: Option<PermissionMode>,
+    allow_broad_cwd: bool,
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -390,16 +397,17 @@ impl CliOutputFormat {
 
 #[allow(clippy::too_many_lines)]
 fn parse_args(args: &[String]) -> Result<CliAction, String> {
+    let launcher_defaults = launcher_defaults();
     let mut model = DEFAULT_MODEL.to_string();
     let mut output_format = CliOutputFormat::Text;
-    let mut permission_mode_override = None;
+    let mut permission_mode_override = launcher_defaults.permission_mode_override;
     let mut wants_help = false;
     let mut wants_version = false;
     let mut allowed_tool_values = Vec::new();
     let mut compact = false;
     let mut base_commit: Option<String> = None;
     let mut reasoning_effort: Option<String> = None;
-    let mut allow_broad_cwd = false;
+    let mut allow_broad_cwd = launcher_defaults.allow_broad_cwd;
     let mut rest: Vec<String> = Vec::new();
     let mut index = 0;
 
@@ -1070,6 +1078,40 @@ fn permission_mode_from_resolved(mode: ResolvedPermissionMode) -> PermissionMode
         ResolvedPermissionMode::ReadOnly => PermissionMode::ReadOnly,
         ResolvedPermissionMode::WorkspaceWrite => PermissionMode::WorkspaceWrite,
         ResolvedPermissionMode::DangerFullAccess => PermissionMode::DangerFullAccess,
+    }
+}
+
+fn launcher_name_from_value(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Path::new(trimmed)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| stem.to_string())
+}
+
+fn current_launcher_name() -> Option<String> {
+    env::var("RUSTY_CLAUDE_LAUNCHER_NAME")
+        .ok()
+        .and_then(|value| launcher_name_from_value(&value))
+        .or_else(|| {
+            env::current_exe().ok().and_then(|path| {
+                path.file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .map(|stem| stem.to_string())
+            })
+        })
+}
+
+fn launcher_defaults() -> LauncherDefaults {
+    match current_launcher_name().as_deref() {
+        Some(name) if name.eq_ignore_ascii_case("cli797") => LauncherDefaults {
+            permission_mode_override: Some(PermissionMode::DangerFullAccess),
+            allow_broad_cwd: true,
+        },
+        _ => LauncherDefaults::default(),
     }
 }
 
@@ -8190,6 +8232,10 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         out,
         "  --dangerously-skip-permissions  Skip all permission checks"
     )?;
+    writeln!(
+        out,
+        "  --allow-broad-cwd          Allow launching from very broad directories such as home or filesystem root"
+    )?;
     writeln!(out, "  --allowedTools TOOLS       Restrict enabled tools (repeatable; comma-separated aliases supported)")?;
     writeln!(
         out,
@@ -9031,6 +9077,49 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+            }
+        );
+    }
+
+    #[test]
+    fn cli797_launcher_defaults_to_danger_full_access_and_broad_cwd() {
+        let _guard = env_lock();
+        std::env::set_var("RUSTY_CLAUDE_PERMISSION_MODE", "read-only");
+        std::env::set_var("RUSTY_CLAUDE_LAUNCHER_NAME", "cli797");
+        let parsed = parse_args(&[]).expect("args should parse");
+        std::env::remove_var("RUSTY_CLAUDE_LAUNCHER_NAME");
+        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
+
+        assert_eq!(
+            parsed,
+            CliAction::Repl {
+                model: DEFAULT_MODEL.to_string(),
+                allowed_tools: None,
+                permission_mode: PermissionMode::DangerFullAccess,
+                base_commit: None,
+                reasoning_effort: None,
+                allow_broad_cwd: true,
+            }
+        );
+    }
+
+    #[test]
+    fn cli797_launcher_allows_explicit_permission_override() {
+        let _guard = env_lock();
+        std::env::set_var("RUSTY_CLAUDE_LAUNCHER_NAME", "cli797.exe");
+        let args = vec!["--permission-mode=read-only".to_string()];
+        let parsed = parse_args(&args).expect("args should parse");
+        std::env::remove_var("RUSTY_CLAUDE_LAUNCHER_NAME");
+
+        assert_eq!(
+            parsed,
+            CliAction::Repl {
+                model: DEFAULT_MODEL.to_string(),
+                allowed_tools: None,
+                permission_mode: PermissionMode::ReadOnly,
+                base_commit: None,
+                reasoning_effort: None,
+                allow_broad_cwd: true,
             }
         );
     }

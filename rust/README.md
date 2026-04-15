@@ -22,7 +22,15 @@ cargo run -p rusty-claude-cli -- prompt "explain this codebase"
 
 # JSON output for automation
 cargo run -p rusty-claude-cli -- --output-format json prompt "summarize src/main.rs"
+
+# Windows convenience launcher with broad/full-access defaults
+cargo run -p rusty-claude-cli --bin cli797 --
 ```
+
+The workspace now emits two entrypoints from the same source:
+
+- `claw`: canonical binary name used by the docs and tests
+- `cli797`: convenience launcher intended for global Windows installs and permissive defaults
 
 ## Configuration
 
@@ -119,6 +127,7 @@ Representative current surface:
 
 ```text
 claw [OPTIONS] [COMMAND]
+cli797 [OPTIONS] [COMMAND]
 
 Flags:
   --model MODEL
@@ -206,7 +215,7 @@ rust/
 
 - **~20K lines** of Rust
 - **9 crates** in workspace
-- **Binary name:** `claw`
+- **Binary names:** `claw`, `cli797`
 - **Default model:** `claude-opus-4-6`
 - **Default permissions:** `danger-full-access`
 

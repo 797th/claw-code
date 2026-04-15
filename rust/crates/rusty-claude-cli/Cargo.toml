@@ -9,6 +9,10 @@ publish.workspace = true
 name = "claw"
 path = "src/main.rs"
 
+[[bin]]
+name = "cli797"
+path = "src/main.rs"
+
 [dependencies]
 api = { path = "../api" }
 commands = { path = "../commands" }

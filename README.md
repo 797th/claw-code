@@ -106,6 +106,18 @@ cd rust
 cargo test --workspace
 ```
 
+### Windows global launcher
+
+If you want a Claude Code-style command you can run from any folder in PowerShell:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\install-cli797.ps1 -Profile release
+cli797
+```
+
+`cli797` keeps the folder you launched from as the active workspace, defaults to `danger-full-access`, and enables broad-CWD runs.
+
 ## Documentation map
 
 - [`USAGE.md`](./USAGE.md) — quick commands, auth, sessions, config, parity harness
