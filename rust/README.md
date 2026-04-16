@@ -15,7 +15,7 @@ cargo run -p rusty-claude-cli -- --help
 cargo build --workspace
 
 # Run the interactive REPL
-cargo run -p rusty-claude-cli -- --model claude-opus-4-6
+cargo run -p rusty-claude-cli -- --model openai/gpt-oss-120b
 
 # One-shot prompt
 cargo run -p rusty-claude-cli -- prompt "explain this codebase"
@@ -37,15 +37,16 @@ The workspace now emits two entrypoints from the same source:
 Set your API credentials:
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-# Or use a proxy
-export ANTHROPIC_BASE_URL="https://your-proxy.com"
+export OPENAI_BASE_URL="https://integrate.api.nvidia.com/v1"
+export OPENAI_API_KEY="nvapi-..."
 ```
 
-Or provide an OAuth bearer token directly:
+Anthropic-compatible endpoints still work too:
 
 ```bash
-export ANTHROPIC_AUTH_TOKEN="anthropic-oauth-or-proxy-bearer-token"
+export ANTHROPIC_API_KEY="sk-ant-..."
+# Or use a proxy:
+export ANTHROPIC_BASE_URL="https://your-proxy.com"
 ```
 
 ## Mock parity harness
@@ -117,6 +118,8 @@ Short names resolve to the latest model versions:
 
 | Alias | Resolves To |
 |-------|------------|
+| `gpt-oss` | `openai/gpt-oss-120b` |
+| `gpt-oss-20b` | `openai/gpt-oss-20b` |
 | `opus` | `claude-opus-4-6` |
 | `sonnet` | `claude-sonnet-4-6` |
 | `haiku` | `claude-haiku-4-5-20251213` |
@@ -216,7 +219,7 @@ rust/
 - **~20K lines** of Rust
 - **9 crates** in workspace
 - **Binary names:** `claw`, `cli797`
-- **Default model:** `claude-opus-4-6`
+- **Default model:** `openai/gpt-oss-120b`
 - **Default permissions:** `danger-full-access`
 
 ## License

@@ -60,7 +60,10 @@ cd claw-code/rust
 cargo build --workspace
 
 # 2. Set your API key (Anthropic API key — not a Claude subscription)
-export ANTHROPIC_API_KEY="sk-ant-..."
+export OPENAI_BASE_URL="https://integrate.api.nvidia.com/v1"
+export OPENAI_API_KEY="nvapi-..."
+
+# Default model in this fork: openai/gpt-oss-120b
 
 # 3. Verify everything is wired correctly
 ./target/debug/claw doctor
@@ -90,7 +93,8 @@ export ANTHROPIC_API_KEY="sk-ant-..."
    ```
 4. **Run** (PowerShell — note `.exe` and backslash):
    ```powershell
-   $env:ANTHROPIC_API_KEY = "sk-ant-..."
+   $env:OPENAI_BASE_URL = "https://integrate.api.nvidia.com/v1"
+   $env:OPENAI_API_KEY = "nvapi-..."
    .\target\debug\claw.exe prompt "say hello"
    ```
 
@@ -100,6 +104,8 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 > **Auth:** claw requires an **API key** (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.) — Claude subscription login is not a supported auth path.
 
 Run the workspace test suite:
+
+NVIDIA NIM note: this fork primarily targets GPT-OSS through the OpenAI-compatible endpoint at `https://integrate.api.nvidia.com/v1`.
 
 ```bash
 cd rust
@@ -117,6 +123,8 @@ cli797
 ```
 
 `cli797` keeps the folder you launched from as the active workspace, defaults to `danger-full-access`, and enables broad-CWD runs.
+
+It also defaults to the NVIDIA NIM GPT-OSS model family in this fork.
 
 ## Documentation map
 

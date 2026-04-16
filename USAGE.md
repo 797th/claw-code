@@ -20,8 +20,10 @@ cargo build --workspace
 
 - Rust toolchain with `cargo`
 - One of:
+  - `OPENAI_API_KEY` for NVIDIA NIM's hosted OpenAI-compatible endpoint
   - `ANTHROPIC_API_KEY` for direct API access
   - `ANTHROPIC_AUTH_TOKEN` for bearer-token auth
+- Optional: `OPENAI_BASE_URL` when targeting NVIDIA NIM or another OpenAI-compatible service
 - Optional: `ANTHROPIC_BASE_URL` when targeting a proxy or local service
 
 ## Install / build the workspace
@@ -33,7 +35,16 @@ cargo build --workspace
 
 The CLI binary is available at `rust/target/debug/claw` after a debug build. Make the doctor check above your first post-build step.
 
-On Windows, the workspace also builds `rust/target/debug/cli797.exe`. When launched as `cli797`, the CLI keeps the directory you launched from as the active workspace, defaults to `danger-full-access`, and allows broad-CWD runs.
+This fork defaults to NVIDIA NIM GPT-OSS through the OpenAI-compatible backend. If you set:
+
+```bash
+export OPENAI_BASE_URL="https://integrate.api.nvidia.com/v1"
+export OPENAI_API_KEY="nvapi-..."
+```
+
+then `claw` defaults to `openai/gpt-oss-120b`. You can switch to `openai/gpt-oss-20b` or the short aliases `gpt-oss` / `gpt-oss-20b` as needed.
+
+On Windows, the workspace also builds `rust/target/debug/cli797.exe`. When launched as `cli797`, the CLI keeps the directory you launched from as the active workspace, defaults to `danger-full-access`, allows broad-CWD runs, and uses the NVIDIA NIM GPT-OSS model family by default.
 
 ## Windows global launcher (`cli797`)
 
@@ -89,7 +100,7 @@ cd rust
 
 ```bash
 cd rust
-./target/debug/claw --model sonnet prompt "review this diff"
+./target/debug/claw --model gpt-oss-20b prompt "review this diff"
 ./target/debug/claw --permission-mode read-only prompt "summarize Cargo.toml"
 ./target/debug/claw --permission-mode workspace-write prompt "update README.md"
 ./target/debug/claw --allowedTools read,glob "inspect the runtime crate"
@@ -110,13 +121,26 @@ Supported permission modes:
 
 Model aliases currently supported by the CLI:
 
+- `gpt-oss` -> `openai/gpt-oss-120b`
+- `gpt-oss-20b` -> `openai/gpt-oss-20b`
 - `opus` → `claude-opus-4-6`
 - `sonnet` → `claude-sonnet-4-6`
 - `haiku` → `claude-haiku-4-5-20251213`
 
 ## Authentication
 
-### API key
+### NVIDIA NIM hosted endpoint
+
+```bash
+export OPENAI_BASE_URL="https://integrate.api.nvidia.com/v1"
+export OPENAI_API_KEY="nvapi-..."
+
+cd rust
+./target/debug/claw prompt "reply with the word ready"
+./target/debug/claw --model gpt-oss-20b prompt "reply with the word ready"
+```
+
+### Anthropic API key
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
@@ -135,6 +159,7 @@ export ANTHROPIC_AUTH_TOKEN="anthropic-oauth-or-proxy-bearer-token"
 
 | Credential shape | Env var | HTTP header | Typical source |
 |---|---|---|---|
+| NVIDIA NIM / NVIDIA hosted OpenAI-compatible key | `OPENAI_API_KEY` + `OPENAI_BASE_URL=https://integrate.api.nvidia.com/v1` | `Authorization: Bearer ...` | [build.nvidia.com](https://build.nvidia.com) |
 | `sk-ant-*` API key | `ANTHROPIC_API_KEY` | `x-api-key: sk-ant-...` | [console.anthropic.com](https://console.anthropic.com) |
 | OAuth access token (opaque) | `ANTHROPIC_AUTH_TOKEN` | `Authorization: Bearer ...` | an Anthropic-compatible proxy or OAuth flow that mints bearer tokens |
 | OpenRouter key (`sk-or-v1-*`) | `OPENAI_API_KEY` + `OPENAI_BASE_URL=https://openrouter.ai/api/v1` | `Authorization: Bearer ...` | [openrouter.ai/keys](https://openrouter.ai/keys) |
@@ -165,6 +190,17 @@ export OPENAI_API_KEY="local-dev-token"
 
 cd rust
 ./target/debug/claw --model "qwen2.5-coder" prompt "reply with the word ready"
+```
+
+### NVIDIA NIM hosted GPT-OSS
+
+```bash
+export OPENAI_BASE_URL="https://integrate.api.nvidia.com/v1"
+export OPENAI_API_KEY="nvapi-..."
+
+cd rust
+./target/debug/claw --model "gpt-oss" prompt "summarize this repository in one sentence"
+./target/debug/claw --model "gpt-oss-20b" prompt "summarize this repository in one sentence"
 ```
 
 ### Ollama
@@ -217,6 +253,8 @@ Reasoning variants (`qwen-qwq-*`, `qwq-*`, `*-thinking`) automatically strip `te
 | **OpenAI-compatible** | OpenAI Chat Completions | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | `https://api.openai.com/v1` |
 | **DashScope** (Alibaba) | OpenAI-compatible | `DASHSCOPE_API_KEY` | `DASHSCOPE_BASE_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
 
+For this fork, the primary OpenAI-compatible target is NVIDIA NIM at `https://integrate.api.nvidia.com/v1`.
+
 The OpenAI-compatible backend also serves as the gateway for **OpenRouter**, **Ollama**, and any other service that speaks the OpenAI `/v1/chat/completions` wire format — just point `OPENAI_BASE_URL` at the service.
 
 **Model-name prefix routing:** If a model name starts with `openai/`, `gpt-`, `qwen/`, or `qwen-`, the provider is selected by the prefix regardless of which env vars are set. This prevents accidental misrouting to Anthropic when multiple credentials exist in the environment.
@@ -227,6 +265,8 @@ These are the models registered in the built-in alias table with known token lim
 
 | Alias | Resolved model name | Provider | Max output tokens | Context window |
 |---|---|---|---|---|
+| `gpt-oss` | `openai/gpt-oss-120b` | OpenAI-compatible / NVIDIA NIM | 8 192 | â€” |
+| `gpt-oss-20b` | `openai/gpt-oss-20b` | OpenAI-compatible / NVIDIA NIM | 8 192 | â€” |
 | `opus` | `claude-opus-4-6` | Anthropic | 32 000 | 200 000 |
 | `sonnet` | `claude-sonnet-4-6` | Anthropic | 64 000 | 200 000 |
 | `haiku` | `claude-haiku-4-5-20251213` | Anthropic | 64 000 | 200 000 |

@@ -122,6 +122,42 @@ const MODEL_REGISTRY: &[(&str, ProviderMetadata)] = &[
             default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
         },
     ),
+    (
+        "gpt-oss",
+        ProviderMetadata {
+            provider: ProviderKind::OpenAi,
+            auth_env: "OPENAI_API_KEY",
+            base_url_env: "OPENAI_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
+        },
+    ),
+    (
+        "gptoss",
+        ProviderMetadata {
+            provider: ProviderKind::OpenAi,
+            auth_env: "OPENAI_API_KEY",
+            base_url_env: "OPENAI_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
+        },
+    ),
+    (
+        "gpt-oss-120b",
+        ProviderMetadata {
+            provider: ProviderKind::OpenAi,
+            auth_env: "OPENAI_API_KEY",
+            base_url_env: "OPENAI_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
+        },
+    ),
+    (
+        "gpt-oss-20b",
+        ProviderMetadata {
+            provider: ProviderKind::OpenAi,
+            auth_env: "OPENAI_API_KEY",
+            base_url_env: "OPENAI_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
+        },
+    ),
 ];
 
 #[must_use]
@@ -144,7 +180,11 @@ pub fn resolve_model_alias(model: &str) -> String {
                     "grok-2" => "grok-2",
                     _ => trimmed,
                 },
-                ProviderKind::OpenAi => trimmed,
+                ProviderKind::OpenAi => match *alias {
+                    "gpt-oss" | "gptoss" | "gpt-oss-120b" => "openai/gpt-oss-120b",
+                    "gpt-oss-20b" => "openai/gpt-oss-20b",
+                    _ => trimmed,
+                },
             })
         })
         .map_or_else(|| trimmed.to_string(), ToOwned::to_owned)
@@ -173,7 +213,10 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
     // route to the correct provider regardless of which auth env vars are set.
     // Without this, detect_provider_kind falls through to the auth-sniffer
     // order and misroutes to Anthropic if ANTHROPIC_API_KEY is present.
-    if canonical.starts_with("openai/") || canonical.starts_with("gpt-") {
+    if canonical.starts_with("openai/")
+        || canonical.starts_with("gpt-")
+        || canonical.starts_with("gptoss")
+    {
         return Some(ProviderMetadata {
             provider: ProviderKind::OpenAi,
             auth_env: "OPENAI_API_KEY",
@@ -233,7 +276,9 @@ pub fn max_tokens_for_model(model: &str) -> u32 {
     model_token_limit(model).map_or_else(
         || {
             let canonical = resolve_model_alias(model);
-            if canonical.contains("opus") {
+            if canonical.contains("gpt-oss") {
+                8_192
+            } else if canonical.contains("opus") {
                 32_000
             } else {
                 64_000
@@ -494,6 +539,14 @@ mod tests {
     }
 
     #[test]
+    fn resolves_gpt_oss_aliases() {
+        assert_eq!(resolve_model_alias("gpt-oss"), "openai/gpt-oss-120b");
+        assert_eq!(resolve_model_alias("gptoss"), "openai/gpt-oss-120b");
+        assert_eq!(resolve_model_alias("gpt-oss-120b"), "openai/gpt-oss-120b");
+        assert_eq!(resolve_model_alias("gpt-oss-20b"), "openai/gpt-oss-20b");
+    }
+
+    #[test]
     fn detects_provider_from_model_name_first() {
         assert_eq!(detect_provider_kind("grok"), ProviderKind::Xai);
         assert_eq!(
@@ -522,6 +575,10 @@ mod tests {
         let kind2 = super::metadata_for_model("gpt-4o")
             .map_or_else(|| detect_provider_kind("gpt-4o"), |m| m.provider);
         assert_eq!(kind2, ProviderKind::OpenAi);
+
+        let kind3 = super::metadata_for_model("gpt-oss-120b")
+            .map_or_else(|| detect_provider_kind("gpt-oss-120b"), |m| m.provider);
+        assert_eq!(kind3, ProviderKind::OpenAi);
     }
 
     #[test]
@@ -558,6 +615,7 @@ mod tests {
     fn keeps_existing_max_token_heuristic() {
         assert_eq!(max_tokens_for_model("opus"), 32_000);
         assert_eq!(max_tokens_for_model("grok-3"), 64_000);
+        assert_eq!(max_tokens_for_model("gpt-oss"), 8_192);
     }
 
     #[test]

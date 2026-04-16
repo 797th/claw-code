@@ -56,9 +56,11 @@ use tools::{
     execute_tool, mvp_tool_specs, GlobalToolRegistry, RuntimeToolDefinition, ToolSearchOutput,
 };
 
-const DEFAULT_MODEL: &str = "claude-opus-4-6";
+const DEFAULT_MODEL: &str = "openai/gpt-oss-120b";
 fn max_tokens_for_model(model: &str) -> u32 {
-    if model.contains("opus") {
+    if model.contains("gpt-oss") {
+        8_192
+    } else if model.contains("opus") {
         32_000
     } else {
         64_000
@@ -1005,6 +1007,8 @@ fn resolve_model_alias(model: &str) -> &str {
         "opus" => "claude-opus-4-6",
         "sonnet" => "claude-sonnet-4-6",
         "haiku" => "claude-haiku-4-5-20251213",
+        "gpt-oss" | "gptoss" | "gpt-oss-120b" => "openai/gpt-oss-120b",
+        "gpt-oss-20b" => "openai/gpt-oss-20b",
         _ => model,
     }
 }
@@ -1144,6 +1148,20 @@ fn config_model_for_current_dir() -> Option<String> {
 fn resolve_repl_model(cli_model: String) -> String {
     if cli_model != DEFAULT_MODEL {
         return cli_model;
+    }
+    if let Some(env_model) = env::var("NVIDIA_NIM_MODEL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return resolve_model_alias_with_config(&env_model);
+    }
+    if let Some(env_model) = env::var("OPENAI_MODEL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return resolve_model_alias_with_config(&env_model);
     }
     if let Some(env_model) = env::var("ANTHROPIC_MODEL")
         .ok()
@@ -7365,6 +7383,8 @@ fn slash_command_completion_candidates_with_sessions(
         "/export ",
         "/issue ",
         "/model ",
+        "/model gpt-oss",
+        "/model gpt-oss-20b",
         "/model opus",
         "/model sonnet",
         "/model haiku",
@@ -8269,7 +8289,7 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         "  Use /session list in the REPL to browse managed sessions"
     )?;
     writeln!(out, "Examples:")?;
-    writeln!(out, "  claw --model claude-opus \"summarize this repo\"")?;
+    writeln!(out, "  claw --model gpt-oss \"summarize this repo\"")?;
     writeln!(
         out,
         "  claw --output-format json prompt \"explain src/main.rs\""
@@ -8956,6 +8976,8 @@ mod tests {
         assert_eq!(resolve_model_alias("opus"), "claude-opus-4-6");
         assert_eq!(resolve_model_alias("sonnet"), "claude-sonnet-4-6");
         assert_eq!(resolve_model_alias("haiku"), "claude-haiku-4-5-20251213");
+        assert_eq!(resolve_model_alias("gpt-oss"), "openai/gpt-oss-120b");
+        assert_eq!(resolve_model_alias("gpt-oss-20b"), "openai/gpt-oss-20b");
         assert_eq!(resolve_model_alias("claude-opus"), "claude-opus");
     }
 
@@ -10030,6 +10052,7 @@ mod tests {
             vec!["session-old".to_string()],
         );
 
+        assert!(completions.contains(&"/model gpt-oss".to_string()));
         assert!(completions.contains(&"/model claude-sonnet-4-6".to_string()));
         assert!(completions.contains(&"/permissions workspace-write".to_string()));
         assert!(completions.contains(&"/session list".to_string()));
@@ -10108,6 +10131,48 @@ mod tests {
         assert_eq!(resolved, "claude-sonnet-4-6");
 
         std::env::remove_var("ANTHROPIC_MODEL");
+        std::env::remove_var("CLAW_CONFIG_HOME");
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn resolve_repl_model_prefers_nim_model_env_when_default() {
+        let _guard = env_lock();
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("root dir");
+        let config_home = root.join("config");
+        fs::create_dir_all(&config_home).expect("config home dir");
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::set_var("NVIDIA_NIM_MODEL", "gpt-oss-20b");
+        std::env::remove_var("OPENAI_MODEL");
+        std::env::remove_var("ANTHROPIC_MODEL");
+
+        let resolved = with_current_dir(&root, || resolve_repl_model(DEFAULT_MODEL.to_string()));
+
+        assert_eq!(resolved, "openai/gpt-oss-20b");
+
+        std::env::remove_var("NVIDIA_NIM_MODEL");
+        std::env::remove_var("CLAW_CONFIG_HOME");
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn resolve_repl_model_prefers_openai_model_env_when_default() {
+        let _guard = env_lock();
+        let root = temp_dir();
+        fs::create_dir_all(&root).expect("root dir");
+        let config_home = root.join("config");
+        fs::create_dir_all(&config_home).expect("config home dir");
+        std::env::set_var("CLAW_CONFIG_HOME", &config_home);
+        std::env::remove_var("NVIDIA_NIM_MODEL");
+        std::env::set_var("OPENAI_MODEL", "gpt-oss");
+        std::env::remove_var("ANTHROPIC_MODEL");
+
+        let resolved = with_current_dir(&root, || resolve_repl_model(DEFAULT_MODEL.to_string()));
+
+        assert_eq!(resolved, "openai/gpt-oss-120b");
+
+        std::env::remove_var("OPENAI_MODEL");
         std::env::remove_var("CLAW_CONFIG_HOME");
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }
