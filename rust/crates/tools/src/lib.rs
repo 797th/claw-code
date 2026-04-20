@@ -2699,7 +2699,11 @@ struct AgentOutput {
     output_file: String,
     #[serde(rename = "manifestFile")]
     manifest_file: String,
-    #[serde(rename = "sessionFile", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "sessionFile",
+        default,
+        skip_serializing_if = "String::is_empty"
+    )]
     session_file: String,
     #[serde(rename = "createdAt")]
     created_at: String,
@@ -2713,13 +2717,25 @@ struct AgentOutput {
     current_blocker: Option<LaneEventBlocker>,
     #[serde(rename = "derivedState")]
     derived_state: String,
-    #[serde(rename = "queuedMessages", default, skip_serializing_if = "is_zero_usize")]
+    #[serde(
+        rename = "queuedMessages",
+        default,
+        skip_serializing_if = "is_zero_usize"
+    )]
     queued_messages: usize,
     #[serde(rename = "turnCount", default, skip_serializing_if = "is_zero_usize")]
     turn_count: usize,
-    #[serde(rename = "lastPrompt", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "lastPrompt",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     last_prompt: Option<String>,
-    #[serde(rename = "lastResult", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "lastResult",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     last_result: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
@@ -2817,7 +2833,10 @@ impl AgentControlRegistry {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.controls.get(agent_id).is_some_and(|control| control.running)
+        inner
+            .controls
+            .get(agent_id)
+            .is_some_and(|control| control.running)
     }
 
     fn enqueue_prompt(&self, manifest: &AgentOutput, prompt: String) -> Result<bool, String> {
@@ -2873,9 +2892,10 @@ impl AgentControlRegistry {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.controls.get(agent_id).is_some_and(|control| {
-            control.stop_requested.load(Ordering::SeqCst)
-        })
+        inner
+            .controls
+            .get(agent_id)
+            .is_some_and(|control| control.stop_requested.load(Ordering::SeqCst))
     }
 
     fn request_stop(&self, agent_id: &str) -> Result<AgentStopRequest, String> {
@@ -3832,8 +3852,12 @@ where
         allowed_tools: allowed_tools_for_subagent(&normalized_subagent_type),
     };
 
-    spawn_fn(job)
-        .map_err(|error| format!("failed to deliver message to {}: {error}", manifest.agent_id))?;
+    spawn_fn(job).map_err(|error| {
+        format!(
+            "failed to deliver message to {}: {error}",
+            manifest.agent_id
+        )
+    })?;
 
     Ok(SendMessageOutput {
         success: true,
@@ -4286,7 +4310,10 @@ fn persist_agent_running_state(
     let turn_number = manifest.turn_count.saturating_add(1);
     append_agent_output(
         &manifest.output_file,
-        &format!("\n## Turn {turn_number}\n\n### User message\n\n{}\n", prompt.trim()),
+        &format!(
+            "\n## Turn {turn_number}\n\n### User message\n\n{}\n",
+            prompt.trim()
+        ),
     )?;
 
     let mut next_manifest = manifest.clone();
@@ -6756,11 +6783,11 @@ mod tests {
         agent_permission_policy, allowed_tools_for_subagent, append_agent_output,
         classify_lane_failure, derive_agent_state, execute_agent_with_spawn,
         execute_send_message_with_spawn, execute_tool, extract_recovery_outcome,
-        final_assistant_text, global_agent_registry, global_cron_registry,
-        maybe_commit_provenance, mvp_tool_specs, permission_mode_from_plugin,
-        persist_agent_terminal_state, push_output_block, run_task_output, run_task_packet,
-        run_task_stop, AgentInput, AgentJob, GlobalToolRegistry, LaneEventName, LaneFailureClass,
-        ProviderRuntimeClient, SendMessageInput, SubagentToolExecutor, TaskIdInput,
+        final_assistant_text, global_agent_registry, global_cron_registry, maybe_commit_provenance,
+        mvp_tool_specs, permission_mode_from_plugin, persist_agent_terminal_state,
+        push_output_block, run_task_output, run_task_packet, run_task_stop, AgentInput, AgentJob,
+        GlobalToolRegistry, LaneEventName, LaneFailureClass, ProviderRuntimeClient,
+        SendMessageInput, SubagentToolExecutor, TaskIdInput,
     };
     use api::OutputContentBlock;
     use runtime::ProviderFallbackConfig;
@@ -8502,8 +8529,11 @@ mod tests {
         )
         .expect("Agent should succeed");
 
-        append_agent_output(&manifest.output_file, "\n### Final response\n\nhello from agent\n")
-            .expect("output append should succeed");
+        append_agent_output(
+            &manifest.output_file,
+            "\n### Final response\n\nhello from agent\n",
+        )
+        .expect("output append should succeed");
 
         let response = run_task_output(TaskIdInput {
             task_id: manifest.agent_id.clone(),
@@ -8511,12 +8541,10 @@ mod tests {
         .expect("TaskOutput should read agent output");
         let payload: serde_json::Value = serde_json::from_str(&response).expect("valid json");
         assert_eq!(payload["task_id"], manifest.agent_id);
-        assert!(
-            payload["output"]
-                .as_str()
-                .expect("output text")
-                .contains("hello from agent")
-        );
+        assert!(payload["output"]
+            .as_str()
+            .expect("output text")
+            .contains("hello from agent"));
 
         std::env::remove_var("CLAWD_AGENT_STORE");
         let _ = std::fs::remove_dir_all(dir);
@@ -8554,12 +8582,10 @@ mod tests {
         .expect("TaskStop should stop live agent controls");
         let payload: serde_json::Value = serde_json::from_str(&response).expect("valid json");
         assert_eq!(payload["status"], "stop_requested");
-        assert!(
-            payload["message"]
-                .as_str()
-                .expect("stop message")
-                .contains("queued_messages_dropped=1")
-        );
+        assert!(payload["message"]
+            .as_str()
+            .expect("stop message")
+            .contains("queued_messages_dropped=1"));
 
         std::env::remove_var("CLAWD_AGENT_STORE");
         let _ = std::fs::remove_dir_all(dir);

@@ -775,22 +775,14 @@ fn is_reasoning_model(model: &str) -> bool {
 /// Strip routing prefix (e.g., "openai/gpt-4" → "gpt-4") for the wire.
 /// The prefix is used only to select transport; the backend expects the
 /// bare model id.
-fn should_preserve_routing_prefix(
-    model: &str,
-    config: OpenAiCompatConfig,
-    base_url: &str,
-) -> bool {
+fn should_preserve_routing_prefix(model: &str, config: OpenAiCompatConfig, base_url: &str) -> bool {
     let normalized_base_url = base_url.trim_end_matches('/');
     config.provider_name == "OpenAI"
         && normalized_base_url != DEFAULT_OPENAI_BASE_URL
         && model.starts_with("openai/")
 }
 
-fn strip_routing_prefix<'a>(
-    model: &'a str,
-    config: OpenAiCompatConfig,
-    base_url: &str,
-) -> &'a str {
+fn strip_routing_prefix<'a>(model: &'a str, config: OpenAiCompatConfig, base_url: &str) -> &'a str {
     if should_preserve_routing_prefix(model, config, base_url) {
         return model;
     }
@@ -1320,8 +1312,8 @@ impl StringExt for String {
 mod tests {
     use super::{
         build_chat_completion_request, build_chat_completion_request_for_base_url,
-        chat_completions_endpoint, is_reasoning_model, normalize_finish_reason,
-        openai_tool_choice, parse_tool_arguments, OpenAiCompatClient, OpenAiCompatConfig,
+        chat_completions_endpoint, is_reasoning_model, normalize_finish_reason, openai_tool_choice,
+        parse_tool_arguments, OpenAiCompatClient, OpenAiCompatConfig,
     };
     use crate::error::ApiError;
     use crate::types::{

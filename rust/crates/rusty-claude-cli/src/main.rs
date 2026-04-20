@@ -8229,12 +8229,18 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         out,
         "      Warning: do not `{DEPRECATED_INSTALL_COMMAND}` (deprecated stub)"
     )?;
-    writeln!(out, "  {command_name} dump-manifests [--manifests-dir PATH]")?;
+    writeln!(
+        out,
+        "  {command_name} dump-manifests [--manifests-dir PATH]"
+    )?;
     writeln!(out, "  {command_name} bootstrap-plan")?;
     writeln!(out, "  {command_name} agents")?;
     writeln!(out, "  {command_name} mcp")?;
     writeln!(out, "  {command_name} skills")?;
-    writeln!(out, "  {command_name} system-prompt [--cwd PATH] [--date YYYY-MM-DD]")?;
+    writeln!(
+        out,
+        "  {command_name} system-prompt [--cwd PATH] [--date YYYY-MM-DD]"
+    )?;
     writeln!(out, "  {command_name} init")?;
     writeln!(
         out,
@@ -8303,12 +8309,18 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         "  Use /session list in the REPL to browse managed sessions"
     )?;
     writeln!(out, "Examples:")?;
-    writeln!(out, "  {command_name} --model gpt-oss \"summarize this repo\"")?;
+    writeln!(
+        out,
+        "  {command_name} --model gpt-oss \"summarize this repo\""
+    )?;
     writeln!(
         out,
         "  {command_name} --output-format json prompt \"explain src/main.rs\""
     )?;
-    writeln!(out, "  {command_name} --compact \"summarize Cargo.toml\" | wc -l")?;
+    writeln!(
+        out,
+        "  {command_name} --compact \"summarize Cargo.toml\" | wc -l"
+    )?;
     writeln!(
         out,
         "  {command_name} --allowedTools read,glob \"summarize Cargo.toml\""
