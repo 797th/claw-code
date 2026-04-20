@@ -10,7 +10,7 @@ name = "claw"
 path = "src/main.rs"
 
 [[bin]]
-name = "cli797"
+name = "cliclaw"
 path = "src/main.rs"
 
 [dependencies]

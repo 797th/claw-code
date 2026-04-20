@@ -1109,9 +1109,22 @@ fn current_launcher_name() -> Option<String> {
         })
 }
 
+fn is_permissive_windows_launcher(name: &str) -> bool {
+    name.eq_ignore_ascii_case("cliclaw") || name.eq_ignore_ascii_case("cli797")
+}
+
+fn display_command_name() -> String {
+    match current_launcher_name().as_deref() {
+        Some(name) if name.eq_ignore_ascii_case("cliclaw") => "cliclaw".to_string(),
+        Some(name) if name.eq_ignore_ascii_case("cli797") => "cli797".to_string(),
+        Some(name) if name.eq_ignore_ascii_case("claw") => "claw".to_string(),
+        _ => "claw".to_string(),
+    }
+}
+
 fn launcher_defaults() -> LauncherDefaults {
     match current_launcher_name().as_deref() {
-        Some(name) if name.eq_ignore_ascii_case("cli797") => LauncherDefaults {
+        Some(name) if is_permissive_windows_launcher(name) => LauncherDefaults {
             permission_mode_override: Some(PermissionMode::DangerFullAccess),
             allow_broad_cwd: true,
         },
@@ -8168,44 +8181,45 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
 
 #[allow(clippy::too_many_lines)]
 fn print_help_to(out: &mut impl Write) -> io::Result<()> {
-    writeln!(out, "claw v{VERSION}")?;
+    let command_name = display_command_name();
+    writeln!(out, "{command_name} v{VERSION}")?;
     writeln!(out)?;
     writeln!(out, "Usage:")?;
     writeln!(
         out,
-        "  claw [--model MODEL] [--allowedTools TOOL[,TOOL...]]"
+        "  {command_name} [--model MODEL] [--allowedTools TOOL[,TOOL...]]"
     )?;
     writeln!(out, "      Start the interactive REPL")?;
     writeln!(
         out,
-        "  claw [--model MODEL] [--output-format text|json] prompt TEXT"
+        "  {command_name} [--model MODEL] [--output-format text|json] prompt TEXT"
     )?;
     writeln!(out, "      Send one prompt and exit")?;
     writeln!(
         out,
-        "  claw [--model MODEL] [--output-format text|json] TEXT"
+        "  {command_name} [--model MODEL] [--output-format text|json] TEXT"
     )?;
     writeln!(out, "      Shorthand non-interactive prompt mode")?;
     writeln!(
         out,
-        "  claw --resume [SESSION.jsonl|session-id|latest] [/status] [/compact] [...]"
+        "  {command_name} --resume [SESSION.jsonl|session-id|latest] [/status] [/compact] [...]"
     )?;
     writeln!(
         out,
         "      Inspect or maintain a saved session without entering the REPL"
     )?;
-    writeln!(out, "  claw help")?;
+    writeln!(out, "  {command_name} help")?;
     writeln!(out, "      Alias for --help")?;
-    writeln!(out, "  claw version")?;
+    writeln!(out, "  {command_name} version")?;
     writeln!(out, "      Alias for --version")?;
-    writeln!(out, "  claw status")?;
+    writeln!(out, "  {command_name} status")?;
     writeln!(
         out,
         "      Show the current local workspace status snapshot"
     )?;
-    writeln!(out, "  claw sandbox")?;
+    writeln!(out, "  {command_name} sandbox")?;
     writeln!(out, "      Show the current sandbox isolation snapshot")?;
-    writeln!(out, "  claw doctor")?;
+    writeln!(out, "  {command_name} doctor")?;
     writeln!(
         out,
         "      Diagnose local auth, config, workspace, and sandbox health"
@@ -8215,16 +8229,16 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         out,
         "      Warning: do not `{DEPRECATED_INSTALL_COMMAND}` (deprecated stub)"
     )?;
-    writeln!(out, "  claw dump-manifests [--manifests-dir PATH]")?;
-    writeln!(out, "  claw bootstrap-plan")?;
-    writeln!(out, "  claw agents")?;
-    writeln!(out, "  claw mcp")?;
-    writeln!(out, "  claw skills")?;
-    writeln!(out, "  claw system-prompt [--cwd PATH] [--date YYYY-MM-DD]")?;
-    writeln!(out, "  claw init")?;
+    writeln!(out, "  {command_name} dump-manifests [--manifests-dir PATH]")?;
+    writeln!(out, "  {command_name} bootstrap-plan")?;
+    writeln!(out, "  {command_name} agents")?;
+    writeln!(out, "  {command_name} mcp")?;
+    writeln!(out, "  {command_name} skills")?;
+    writeln!(out, "  {command_name} system-prompt [--cwd PATH] [--date YYYY-MM-DD]")?;
+    writeln!(out, "  {command_name} init")?;
     writeln!(
         out,
-        "  claw export [PATH] [--session SESSION] [--output PATH]"
+        "  {command_name} export [PATH] [--session SESSION] [--output PATH]"
     )?;
     writeln!(
         out,
@@ -8289,33 +8303,33 @@ fn print_help_to(out: &mut impl Write) -> io::Result<()> {
         "  Use /session list in the REPL to browse managed sessions"
     )?;
     writeln!(out, "Examples:")?;
-    writeln!(out, "  claw --model gpt-oss \"summarize this repo\"")?;
+    writeln!(out, "  {command_name} --model gpt-oss \"summarize this repo\"")?;
     writeln!(
         out,
-        "  claw --output-format json prompt \"explain src/main.rs\""
+        "  {command_name} --output-format json prompt \"explain src/main.rs\""
     )?;
-    writeln!(out, "  claw --compact \"summarize Cargo.toml\" | wc -l")?;
+    writeln!(out, "  {command_name} --compact \"summarize Cargo.toml\" | wc -l")?;
     writeln!(
         out,
-        "  claw --allowedTools read,glob \"summarize Cargo.toml\""
+        "  {command_name} --allowedTools read,glob \"summarize Cargo.toml\""
     )?;
-    writeln!(out, "  claw --resume {LATEST_SESSION_REFERENCE}")?;
+    writeln!(out, "  {command_name} --resume {LATEST_SESSION_REFERENCE}")?;
     writeln!(
         out,
-        "  claw --resume {LATEST_SESSION_REFERENCE} /status /diff /export notes.txt"
+        "  {command_name} --resume {LATEST_SESSION_REFERENCE} /status /diff /export notes.txt"
     )?;
-    writeln!(out, "  claw agents")?;
-    writeln!(out, "  claw mcp show my-server")?;
-    writeln!(out, "  claw /skills")?;
-    writeln!(out, "  claw doctor")?;
+    writeln!(out, "  {command_name} agents")?;
+    writeln!(out, "  {command_name} mcp show my-server")?;
+    writeln!(out, "  {command_name} /skills")?;
+    writeln!(out, "  {command_name} doctor")?;
     writeln!(out, "  source of truth: {OFFICIAL_REPO_URL}")?;
     writeln!(
         out,
         "  do not run `{DEPRECATED_INSTALL_COMMAND}` — it installs a deprecated stub"
     )?;
-    writeln!(out, "  claw init")?;
-    writeln!(out, "  claw export")?;
-    writeln!(out, "  claw export conversation.md")?;
+    writeln!(out, "  {command_name} init")?;
+    writeln!(out, "  {command_name} export")?;
+    writeln!(out, "  {command_name} export conversation.md")?;
     Ok(())
 }
 
@@ -9104,10 +9118,10 @@ mod tests {
     }
 
     #[test]
-    fn cli797_launcher_defaults_to_danger_full_access_and_broad_cwd() {
+    fn cliclaw_launcher_defaults_to_danger_full_access_and_broad_cwd() {
         let _guard = env_lock();
         std::env::set_var("RUSTY_CLAUDE_PERMISSION_MODE", "read-only");
-        std::env::set_var("RUSTY_CLAUDE_LAUNCHER_NAME", "cli797");
+        std::env::set_var("RUSTY_CLAUDE_LAUNCHER_NAME", "cliclaw");
         let parsed = parse_args(&[]).expect("args should parse");
         std::env::remove_var("RUSTY_CLAUDE_LAUNCHER_NAME");
         std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
@@ -9126,9 +9140,9 @@ mod tests {
     }
 
     #[test]
-    fn cli797_launcher_allows_explicit_permission_override() {
+    fn cliclaw_launcher_allows_explicit_permission_override() {
         let _guard = env_lock();
-        std::env::set_var("RUSTY_CLAUDE_LAUNCHER_NAME", "cli797.exe");
+        std::env::set_var("RUSTY_CLAUDE_LAUNCHER_NAME", "cliclaw.exe");
         let args = vec!["--permission-mode=read-only".to_string()];
         let parsed = parse_args(&args).expect("args should parse");
         std::env::remove_var("RUSTY_CLAUDE_LAUNCHER_NAME");
@@ -9169,6 +9183,28 @@ mod tests {
                 base_commit: None,
                 reasoning_effort: None,
                 allow_broad_cwd: false,
+            }
+        );
+    }
+
+    #[test]
+    fn legacy_cli797_launcher_still_uses_permissive_defaults() {
+        let _guard = env_lock();
+        std::env::set_var("RUSTY_CLAUDE_PERMISSION_MODE", "read-only");
+        std::env::set_var("RUSTY_CLAUDE_LAUNCHER_NAME", "cli797");
+        let parsed = parse_args(&[]).expect("args should parse");
+        std::env::remove_var("RUSTY_CLAUDE_LAUNCHER_NAME");
+        std::env::remove_var("RUSTY_CLAUDE_PERMISSION_MODE");
+
+        assert_eq!(
+            parsed,
+            CliAction::Repl {
+                model: DEFAULT_MODEL.to_string(),
+                allowed_tools: None,
+                permission_mode: PermissionMode::DangerFullAccess,
+                base_commit: None,
+                reasoning_effort: None,
+                allow_broad_cwd: true,
             }
         );
     }
@@ -10287,6 +10323,21 @@ mod tests {
         assert!(help.contains("cargo install claw-code"));
         assert!(!help.contains("claw login"));
         assert!(!help.contains("claw logout"));
+    }
+
+    #[test]
+    fn cliclaw_help_uses_launcher_name() {
+        let _guard = env_lock();
+        std::env::set_var("RUSTY_CLAUDE_LAUNCHER_NAME", "cliclaw");
+        let mut help = Vec::new();
+        print_help_to(&mut help).expect("help should render");
+        std::env::remove_var("RUSTY_CLAUDE_LAUNCHER_NAME");
+
+        let help = String::from_utf8(help).expect("help should be utf8");
+        assert!(help.contains("cliclaw v"));
+        assert!(help.contains("cliclaw help"));
+        assert!(help.contains("cliclaw doctor"));
+        assert!(help.contains("cliclaw --model gpt-oss"));
     }
 
     #[test]

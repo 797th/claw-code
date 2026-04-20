@@ -24,13 +24,15 @@ cargo run -p rusty-claude-cli -- prompt "explain this codebase"
 cargo run -p rusty-claude-cli -- --output-format json prompt "summarize src/main.rs"
 
 # Windows convenience launcher with broad/full-access defaults
-cargo run -p rusty-claude-cli --bin cli797 --
+cargo run -p rusty-claude-cli --bin cliclaw --
 ```
 
 The workspace now emits two entrypoints from the same source:
 
 - `claw`: canonical binary name used by the docs and tests
-- `cli797`: convenience launcher intended for global Windows installs and permissive defaults
+- `cliclaw`: convenience launcher intended for global Windows installs and permissive defaults
+
+Older `cli797` installs still get the same launcher defaults if you already have that binary lying around.
 
 ## Configuration
 
@@ -130,7 +132,7 @@ Representative current surface:
 
 ```text
 claw [OPTIONS] [COMMAND]
-cli797 [OPTIONS] [COMMAND]
+cliclaw [OPTIONS] [COMMAND]
 
 Flags:
   --model MODEL
@@ -218,7 +220,7 @@ rust/
 
 - **~20K lines** of Rust
 - **9 crates** in workspace
-- **Binary names:** `claw`, `cli797`
+- **Binary names:** `claw`, `cliclaw`
 - **Default model:** `openai/gpt-oss-120b`
 - **Default permissions:** `danger-full-access`
 

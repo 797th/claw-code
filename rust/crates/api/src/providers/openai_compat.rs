@@ -254,7 +254,11 @@ impl OpenAiCompatClient {
             .post(&request_url)
             .header("content-type", "application/json")
             .bearer_auth(&self.api_key)
-            .json(&build_chat_completion_request(request, self.config()))
+            .json(&build_chat_completion_request_for_base_url(
+                request,
+                self.config(),
+                &self.base_url,
+            ))
             .send()
             .await
             .map_err(ApiError::from)
@@ -771,7 +775,26 @@ fn is_reasoning_model(model: &str) -> bool {
 /// Strip routing prefix (e.g., "openai/gpt-4" → "gpt-4") for the wire.
 /// The prefix is used only to select transport; the backend expects the
 /// bare model id.
-fn strip_routing_prefix(model: &str) -> &str {
+fn should_preserve_routing_prefix(
+    model: &str,
+    config: OpenAiCompatConfig,
+    base_url: &str,
+) -> bool {
+    let normalized_base_url = base_url.trim_end_matches('/');
+    config.provider_name == "OpenAI"
+        && normalized_base_url != DEFAULT_OPENAI_BASE_URL
+        && model.starts_with("openai/")
+}
+
+fn strip_routing_prefix<'a>(
+    model: &'a str,
+    config: OpenAiCompatConfig,
+    base_url: &str,
+) -> &'a str {
+    if should_preserve_routing_prefix(model, config, base_url) {
+        return model;
+    }
+
     if let Some(pos) = model.find('/') {
         let prefix = &model[..pos];
         // Only strip if the prefix before "/" is a known routing prefix,
@@ -786,7 +809,16 @@ fn strip_routing_prefix(model: &str) -> &str {
     }
 }
 
+#[cfg(test)]
 fn build_chat_completion_request(request: &MessageRequest, config: OpenAiCompatConfig) -> Value {
+    build_chat_completion_request_for_base_url(request, config, &read_base_url(config))
+}
+
+fn build_chat_completion_request_for_base_url(
+    request: &MessageRequest,
+    config: OpenAiCompatConfig,
+    base_url: &str,
+) -> Value {
     let mut messages = Vec::new();
     if let Some(system) = request.system.as_ref().filter(|value| !value.is_empty()) {
         messages.push(json!({
@@ -807,7 +839,7 @@ fn build_chat_completion_request(request: &MessageRequest, config: OpenAiCompatC
     messages = sanitize_tool_message_pairing(messages);
 
     // Strip routing prefix (e.g., "openai/gpt-4" → "gpt-4") for the wire.
-    let wire_model = strip_routing_prefix(&request.model);
+    let wire_model = strip_routing_prefix(&request.model, config, base_url);
 
     // gpt-5* requires `max_completion_tokens`; older OpenAI models accept both.
     // We send the correct field based on the wire model name so gpt-5.x requests
@@ -1287,9 +1319,9 @@ impl StringExt for String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_chat_completion_request, chat_completions_endpoint, is_reasoning_model,
-        normalize_finish_reason, openai_tool_choice, parse_tool_arguments, OpenAiCompatClient,
-        OpenAiCompatConfig,
+        build_chat_completion_request, build_chat_completion_request_for_base_url,
+        chat_completions_endpoint, is_reasoning_model, normalize_finish_reason,
+        openai_tool_choice, parse_tool_arguments, OpenAiCompatClient, OpenAiCompatConfig,
     };
     use crate::error::ApiError;
     use crate::types::{
@@ -1497,6 +1529,36 @@ mod tests {
             chat_completions_endpoint("https://api.x.ai/v1/chat/completions"),
             "https://api.x.ai/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn custom_openai_compatible_endpoints_preserve_namespaced_model_ids() {
+        let payload = build_chat_completion_request_for_base_url(
+            &MessageRequest {
+                model: "openai/gpt-oss-120b".to_string(),
+                max_tokens: 64,
+                messages: vec![InputMessage::user_text("hello")],
+                ..Default::default()
+            },
+            OpenAiCompatConfig::openai(),
+            "https://integrate.api.nvidia.com/v1",
+        );
+        assert_eq!(payload["model"], json!("openai/gpt-oss-120b"));
+    }
+
+    #[test]
+    fn default_openai_endpoint_still_strips_routing_prefix() {
+        let payload = build_chat_completion_request_for_base_url(
+            &MessageRequest {
+                model: "openai/gpt-4.1-mini".to_string(),
+                max_tokens: 64,
+                messages: vec![InputMessage::user_text("hello")],
+                ..Default::default()
+            },
+            OpenAiCompatConfig::openai(),
+            super::DEFAULT_OPENAI_BASE_URL,
+        );
+        assert_eq!(payload["model"], json!("gpt-4.1-mini"));
     }
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {

@@ -44,19 +44,19 @@ export OPENAI_API_KEY="nvapi-..."
 
 then `claw` defaults to `openai/gpt-oss-120b`. You can switch to `openai/gpt-oss-20b` or the short aliases `gpt-oss` / `gpt-oss-20b` as needed.
 
-On Windows, the workspace also builds `rust/target/debug/cli797.exe`. When launched as `cli797`, the CLI keeps the directory you launched from as the active workspace, defaults to `danger-full-access`, allows broad-CWD runs, and uses the NVIDIA NIM GPT-OSS model family by default.
+On Windows, the workspace also builds `rust/target/debug/cliclaw.exe`. When launched as `cliclaw`, the CLI keeps the directory you launched from as the active workspace, defaults to `danger-full-access`, allows broad-CWD runs, and uses the NVIDIA NIM GPT-OSS model family by default.
 
-## Windows global launcher (`cli797`)
+## Windows global launcher (`cliclaw`)
 
 If you want a Claude Code-style global command from any terminal window:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\install-cli797.ps1 -Profile release
-cli797
+.\install-cliclaw.ps1 -Profile release
+cliclaw
 ```
 
-The installer builds `cli797.exe`, copies it into a user-level bin directory, and adds that directory to your PATH when needed. After installation, running `cli797` from `C:\some\project` starts the CLI in `C:\some\project`.
+The installer builds `cliclaw.exe`, copies it into a user-level bin directory, and adds that directory to your PATH when needed. After installation, running `cliclaw` from `C:\some\project` starts the CLI in `C:\some\project`.
 
 ## Quick start
 
@@ -106,12 +106,14 @@ cd rust
 ./target/debug/claw --allowedTools read,glob "inspect the runtime crate"
 ```
 
-`cli797` bakes in the broad/full-access defaults already, so a Windows install launched through `cli797` behaves like:
+`cliclaw` bakes in the broad/full-access defaults already, so a Windows install launched through `cliclaw` behaves like:
 
 ```powershell
-cli797
-cli797 prompt "review this repository"
+cliclaw
+cliclaw prompt "review this repository"
 ```
+
+Older `cli797` binaries still map to the same permissive launcher defaults for compatibility.
 
 Supported permission modes:
 

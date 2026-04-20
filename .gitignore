@@ -8,5 +8,8 @@ archive/
 # Claw Code local artifacts
 .claw/settings.local.json
 .claw/sessions/
+.claw/plugins/
+rust/.claw/
 .clawhip/
 status-help.txt
+tmp-cliclaw-bin/

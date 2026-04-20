@@ -59,7 +59,7 @@ git clone https://github.com/ultraworkers/claw-code
 cd claw-code/rust
 cargo build --workspace
 
-# 2. Set your API key (Anthropic API key — not a Claude subscription)
+# 2. Set your API settings for NVIDIA NIM (OpenAI-compatible)
 export OPENAI_BASE_URL="https://integrate.api.nvidia.com/v1"
 export OPENAI_API_KEY="nvapi-..."
 
@@ -118,13 +118,15 @@ If you want a Claude Code-style command you can run from any folder in PowerShel
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
-.\install-cli797.ps1 -Profile release
-cli797
+.\install-cliclaw.ps1 -Profile release
+cliclaw
 ```
 
-`cli797` keeps the folder you launched from as the active workspace, defaults to `danger-full-access`, and enables broad-CWD runs.
+`cliclaw` keeps the folder you launched from as the active workspace, defaults to `danger-full-access`, and enables broad-CWD runs.
 
 It also defaults to the NVIDIA NIM GPT-OSS model family in this fork.
+
+Legacy `cli797` installs still receive the same permissive launcher defaults.
 
 ## Documentation map
 

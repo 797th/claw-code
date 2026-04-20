@@ -2840,7 +2840,7 @@ impl AgentControlRegistry {
                 control.stop_requested.store(false, Ordering::SeqCst);
             }
             should_spawn
-        }
+        };
         inner.names.insert(name, agent_id);
         Ok(should_spawn)
     }
