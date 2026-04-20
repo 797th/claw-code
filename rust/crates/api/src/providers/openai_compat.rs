@@ -2260,9 +2260,11 @@ mod tests {
 
     #[test]
     fn strip_routing_prefix_strips_kimi_provider_prefix() {
-        // US-023: kimi prefix should be stripped for wire format
-        assert_eq!(super::strip_routing_prefix("kimi/kimi-k2.5"), "kimi-k2.5");
-        assert_eq!(super::strip_routing_prefix("kimi-k2.5"), "kimi-k2.5"); // no prefix, unchanged
-        assert_eq!(super::strip_routing_prefix("kimi/kimi-k1.5"), "kimi-k1.5");
+        // US-023: kimi prefix should be stripped for wire format (DashScope endpoint)
+        let cfg = OpenAiCompatConfig::dashscope();
+        let url = cfg.default_base_url;
+        assert_eq!(super::strip_routing_prefix("kimi/kimi-k2.5", cfg, url), "kimi-k2.5");
+        assert_eq!(super::strip_routing_prefix("kimi-k2.5", cfg, url), "kimi-k2.5"); // no prefix, unchanged
+        assert_eq!(super::strip_routing_prefix("kimi/kimi-k1.5", cfg, url), "kimi-k1.5");
     }
 }
