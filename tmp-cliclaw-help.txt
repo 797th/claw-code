@@ -1,0 +1,113 @@
+cliclaw v0.1.0
+
+Usage:
+  cliclaw [--model MODEL] [--allowedTools TOOL[,TOOL...]]
+      Start the interactive REPL
+  cliclaw [--model MODEL] [--output-format text|json] prompt TEXT
+      Send one prompt and exit
+  cliclaw [--model MODEL] [--output-format text|json] TEXT
+      Shorthand non-interactive prompt mode
+  cliclaw --resume [SESSION.jsonl|session-id|latest] [/status] [/compact] [...]
+      Inspect or maintain a saved session without entering the REPL
+  cliclaw help
+      Alias for --help
+  cliclaw version
+      Alias for --version
+  cliclaw status
+      Show the current local workspace status snapshot
+  cliclaw sandbox
+      Show the current sandbox isolation snapshot
+  cliclaw doctor
+      Diagnose local auth, config, workspace, and sandbox health
+      Source of truth: ultraworkers/claw-code
+      Warning: do not `cargo install claw-code` (deprecated stub)
+  cliclaw dump-manifests [--manifests-dir PATH]
+  cliclaw bootstrap-plan
+  cliclaw agents
+  cliclaw mcp
+  cliclaw skills
+  cliclaw system-prompt [--cwd PATH] [--date YYYY-MM-DD]
+  cliclaw init
+  cliclaw export [PATH] [--session SESSION] [--output PATH]
+      Dump the latest (or named) session as markdown; writes to PATH or stdout
+
+Flags:
+  --model MODEL              Override the active model
+  --output-format FORMAT     Non-interactive output format: text or json
+  --compact                  Strip tool call details; print only the final assistant text (text mode only; useful for piping)
+  --permission-mode MODE     Set read-only, workspace-write, or danger-full-access
+  --dangerously-skip-permissions  Skip all permission checks
+  --allow-broad-cwd          Allow launching from very broad directories such as home or filesystem root
+  --allowedTools TOOLS       Restrict enabled tools (repeatable; comma-separated aliases supported)
+  --version, -V              Print version and build information locally
+
+Interactive slash commands:
+Slash commands
+  Start here        /status, /diff, /agents, /skills, /commit
+  [resume]          also works with --resume SESSION.jsonl
+
+Session
+  /help                                                              Show available slash commands [resume]
+  /status                                                            Show current session status [resume]
+  /compact                                                           Compact local session history [resume]
+  /clear [--confirm]                                                 Start a fresh local session [resume]
+  /cost                                                              Show cumulative token usage for this session [resume]
+  /resume <session-path>                                             Load a saved session into the REPL
+  /version                                                           Show CLI version and build information [resume]
+  /session [list|switch <session-id>|fork [branch-name]|delete <session-id> [--force]] List, switch, fork, or delete managed local sessions
+  /stats                                                             Show workspace and session statistics [resume]
+  /history [count]                                                   Show conversation history summary [resume]
+  /tokens                                                            Show token count for the current conversation [resume]
+  /cache                                                             Show prompt cache statistics [resume]
+
+Tools
+  /mcp [list|show <server>|help]                                     Inspect configured MCP servers [resume]
+  /init                                                              Create a starter CLAUDE.md for this repo [resume]
+  /diff                                                              Show git diff for current workspace changes [resume]
+  /bughunter [scope]                                                 Inspect the codebase for likely bugs
+  /commit                                                            Generate a commit message and create a git commit
+  /pr [context]                                                      Draft or create a pull request from the conversation
+  /issue [context]                                                   Draft or create a GitHub issue from the conversation
+  /ultraplan [task]                                                  Run a deep planning prompt with multi-step reasoning
+  /teleport <symbol-or-path>                                         Jump to a file or symbol by searching the workspace
+  /export [file]                                                     Export the current conversation to a file [resume]
+  /plugin [list|install <path>|enable <name>|disable <name>|uninstall <id>|update <id>] Manage Claw Code plugins (aliases: /plugins, /marketplace)
+  /agents [list|help]                                                List configured agents [resume]
+  /skills [list|install <path>|help|<skill> [args]]                  List, install, or invoke available skills (aliases: /skill) [resume]
+  /approve                                                           Approve a pending tool execution (aliases: /yes, /y)
+  /deny                                                              Deny a pending tool execution (aliases: /no, /n)
+
+Config
+  /model [model]                                                     Show or switch the active model
+  /permissions [read-only|workspace-write|danger-full-access]        Show or switch the active permission mode
+  /config [env|hooks|model|plugins]                                  Inspect Claude config files or merged sections [resume]
+  /memory                                                            Inspect loaded Claude instruction memory files [resume]
+  /providers                                                         List available model providers [resume]
+
+Debug
+  /sandbox                                                           Show sandbox isolation status [resume]
+  /debug-tool-call                                                   Replay the last tool call with debug details
+  /doctor                                                            Diagnose setup issues and environment health [resume]
+
+Resume-safe commands: /help, /status, /sandbox, /compact, /clear [--confirm], /cost, /config [env|hooks|model|plugins], /mcp [list|show <server>|help], /memory, /init, /diff, /version, /export [file], /agents [list|help], /skills [list|install <path>|help|<skill> [args]], /doctor, /plan [on|off], /tasks [list|get <id>|stop <id>], /theme [theme-name], /vim, /usage, /stats, /copy [last|all], /hooks [list|run <hook>], /files, /context [show|clear], /color [scheme], /effort [low|medium|high], /fast, /summary, /tag [label], /brief, /advisor, /stickers, /insights, /thinkback, /keybindings, /privacy-settings, /output-style [style], /allowed-tools [add|remove|list] [tool], /terminal-setup, /language [language], /max-tokens [count], /temperature [value], /system-prompt, /tool-details <tool-name>, /bookmarks [add|remove|list], /workspace [path], /history [count], /tokens, /cache, /providers, /notifications [on|off|status], /changelog [count], /blame <file> [line], /log [count], /cron [list|add|remove], /team [list|create|delete], /telemetry [on|off|status], /env, /project, /map [depth], /symbols <path>, /hover <symbol>, /diagnostics [path], /alias <name> <command>, /agent [list|spawn|kill], /subagent [list|steer <target> <msg>|kill <id>], /reasoning [on|off|stream], /budget [show|set <limit>], /rate-limit [status|set <rpm>], /metrics
+
+Session shortcuts:
+  REPL turns auto-save to .claw/sessions/<session-id>.jsonl
+  Use `latest` with --resume, /resume, or /session switch to target the newest saved session
+  Use /session list in the REPL to browse managed sessions
+Examples:
+  cliclaw --model gpt-oss "summarize this repo"
+  cliclaw --output-format json prompt "explain src/main.rs"
+  cliclaw --compact "summarize Cargo.toml" | wc -l
+  cliclaw --allowedTools read,glob "summarize Cargo.toml"
+  cliclaw --resume latest
+  cliclaw --resume latest /status /diff /export notes.txt
+  cliclaw agents
+  cliclaw mcp show my-server
+  cliclaw /skills
+  cliclaw doctor
+  source of truth: https://github.com/ultraworkers/claw-code
+  do not run `cargo install claw-code` — it installs a deprecated stub
+  cliclaw init
+  cliclaw export
+  cliclaw export conversation.md
