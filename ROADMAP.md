@@ -830,6 +830,49 @@ Acceptance:
 - channel status updates stay short and machine-grounded
 - claws stop inferring state from raw build spam
 
+### 140. Deprecated `permissionMode` migration silently downgrades `DangerFullAccess` to `WorkspaceWrite`
+
+**Filed:** 2026-04-21 from dogfood cycle — `cargo test --workspace` on `main` HEAD `36b3a09` shows 1 deterministic failure.
+
+**Problem:** `tests::punctuation_bearing_single_token_still_dispatches_to_prompt` fails with:
+```
+assert left == right failed
+  left:  ... permission_mode: WorkspaceWrite ...
+  right: ... permission_mode: DangerFullAccess ...
+warning: .claw/settings.json: field "permissionMode" is deprecated (line 1). Use "permissions.defaultMode" instead
+```
+The test fixture writes a `.claw/settings.json` with the deprecated `permissionMode: "dangerFullAccess"` key. The migration/deprecation shim reads it but resolves to `WorkspaceWrite` instead of `DangerFullAccess`. Result: `cargo test --workspace` is red on `main` with 172 passing, 1 failing.
+
+**Root cause hypothesis:** The deprecated field reader in `parse_args` or `ConfigLoader` applies the `permissionMode` value through a permission-mode resolver that does not map `"dangerFullAccess"` to `PermissionMode::DangerFullAccess`, likely defaulting or falling back to `WorkspaceWrite`.
+
+**Fix shape:**
+- Ensure the deprecated-key migration path correctly maps `permissionMode: "dangerFullAccess"` → `PermissionMode::DangerFullAccess` (same as `permissions.defaultMode: "dangerFullAccess"`).
+- Alternatively, update the test fixture to use the canonical `permissions.defaultMode` key so it exercises the migration shim rather than depending on it.
+- Verify `cargo test --workspace` returns 0 failures.
+
+**Acceptance:**
+- `cargo test --workspace` passes with 0 failures on `main`.
+- Deprecated `permissionMode: "dangerFullAccess"` migrates cleanly to `DangerFullAccess` without downgrading to `WorkspaceWrite`.
+
+### 137. Model-alias shorthand regression in test suite — bare alias parsing broken on `feat/134-135-session-identity` branch
+
+**Filed:** 2026-04-21 from dogfood cycle — `cargo test --workspace` on `feat/134-135-session-identity` HEAD (`91ba54d`) shows 3 failing tests.
+
+**Problem:** `tests::parses_bare_prompt_and_json_output_flag`, `tests::multi_word_prompt_still_uses_shorthand_prompt_mode`, and `tests::env_permission_mode_overrides_project_config_default` all panic with:
+```
+args should parse: "invalid model syntax: 'claude-opus'. Expected provider/model (e.g., anthropic/claude-opus-4-6) or known alias (opus, sonnet, haiku)"
+```
+The #134/#135 session-identity work tightened model-syntax validation but the test fixtures still pass bare `claude-opus` style strings that the new validator rejects. 162 tests pass; only the three tests using legacy bare-alias model names fail.
+
+**Fix shape:**
+- Update the three failing test fixtures to use either a valid alias (`opus`, `sonnet`, `haiku`) or a fully-qualified model id (`anthropic/claude-opus-4-6`)
+- Alternatively, if `claude-opus` is an intended supported alias, add it to the alias registry
+- Verify `cargo test --workspace` returns 0 failures before merging the feat branch to `main`
+
+**Acceptance:**
+- `cargo test --workspace` passes with 0 failures on the `feat/134-135-session-identity` branch
+- No regression on the 162 tests currently passing
+
 ### 133. Blocked-state subphase contract (was §6.5)
 **Filed:** 2026-04-20 from dogfood cycle — previous cycle identified §4.44.5 provenance gap, this cycle targets §6.5 implementation.
 
@@ -4772,7 +4815,19 @@ ear], /color [scheme], /effort [low|medium|high], /fast, /summary, /tag [label],
 
      **Source.** Jobdori dogfood 2026-04-20 against `/tmp/claw-dogfood` (env-cleaned, no git, no config) on main HEAD `7370546` in response to Clawhip pinpoint nudge at `1495620050424434758`. Joins **Silent-flag / documented-but-unenforced** (#96–#101, #104, #108, #111, #115, #116, #117, #118, #119, #121, #122, #123, #124, #126) as 18th — `--json` silently swallowed into Prompt dispatch instead of being recognized or rejected. Joins **Parser-level trust gap quintet** (#108, #117, #119, #122, **#127**) as 5th — same `_other => Prompt` fall-through arm, fifth distinct entry case (#108 = typoed verb, #117 = `-p` greedy, #119 = bare slash + arg, #122 = `--base-commit` greedy, **#127 = valid verb + unrecognized suffix arg**). Joins **Cred-error misdirection / failure-classification gaps** as a sibling of #99 (system-prompt unvalidated) — same family of "local diagnostic verb pretends to need API creds." Joins **Truth-audit / diagnostic-integrity** (#80–#87, #89, #100, #102, #103, #105, #107, #109, #110, #112, #114, #115, #125) — `claw --help` lies about per-verb accepted flags. Joins **Parallel-entry-point asymmetry** (#91, #101, #104, #105, #108, #114, #117, #122, #123, #124) as 11th — three working forms and one broken form for the same logical intent (`--json` doctor output). Joins **Claude Code migration parity** (#103, #109, #116) as 4th — Claude Code's `--json` convention shorthand is unrecognized in claw-code's verb-suffix position; users migrating get cred errors instead. Cross-cluster with **README/USAGE doc-vs-implementation gap** — README explicitly recommends `claw doctor` as the first health check; the natural JSON form of that exact command is broken. Natural bundle: **#108 + #117 + #119 + #122 + #127** — parser-level trust gap quintet: complete `_other => Prompt` fall-through audit (typoed verb + greedy `-p` + bare slash-verb + greedy `--base-commit` + valid verb + unrecognized suffix). Also **#99 + #127** — local-diagnostic cred-error misdirection pair: `system-prompt` and verb-suffix `--json` both pretend to need creds for pure-local operations. Also **#126 + #127** — diagnostic-verb surface integrity pair: `/config` section args ignored (#126) + verb-suffix args silently mis-dispatched (#127). Session tally: ROADMAP #127.
 
-128. **`claw --model <malformed>` (spaces, empty string, special chars, invalid provider/model syntax) silently falls through to API-layer cred error instead of rejecting at parse time** — dogfooded 2026-04-20 on main HEAD `d284ef7` from a fresh environment (no config, no auth). The `--model` flag accepts any string without syntactic validation: spaces (`claw --model "bad model"`), empty strings (`claw --model ""`), special characters (`claw --model "@invalid"`), non-existent provider/model combinations all parse successfully. The malformed model string then flows into the runtime's provider-detection layer, which silently accepts it as Anthropic fallback or passes it to an API layer that fails with `missing Anthropic credentials` (misdirection) rather than a clear "invalid model syntax" error at parse time. With API credentials configured, a malformed model string gets sent to the API, billing tokens against a request that should have failed client-side.
+128. **[CLOSED 2026-04-21]** **`claw --model <malformed>` (spaces, empty string, special chars, invalid provider/model syntax) silently falls through to API-layer cred error instead of rejecting at parse time** — dogfooded 2026-04-20 on main HEAD `d284ef7` from a fresh environment (no config, no auth). The `--model` flag accepts any string without syntactic validation: spaces (`claw --model "bad model"`), empty strings (`claw --model ""`), special characters (`claw --model "@invalid"`), non-existent provider/model combinations all parse successfully. The malformed model string then flows into the runtime's provider-detection layer, which silently accepts it as Anthropic fallback or passes it to an API layer that fails with `missing Anthropic credentials` (misdirection) rather than a clear "invalid model syntax" error at parse time. With API credentials configured, a malformed model string gets sent to the API, billing tokens against a request that should have failed client-side.
+
+     **Closure (2026-04-21):** Re-verified on main HEAD `4cb8fa0`. All cases now rejected at parse time:
+     ```
+     $ claw --model '' status           → error: model string cannot be empty
+     $ claw --model 'bad model' status  → error: invalid model syntax: 'bad model' contains spaces
+     $ claw --model 'sonet' status      → error: invalid model syntax: 'sonet'. Expected provider/model ...
+     $ claw --model '@invalid' status   → error: invalid model syntax: '@invalid'. Expected provider/model ...
+     $ claw --model 'totally-not-real-xyz' status → error: invalid model syntax ...
+     $ claw --model sonnet status       → ok, resolves to claude-sonnet-4-6
+     $ claw --model anthropic/claude-opus-4-6 status → ok, passes through
+     ```
+     Validation happens in `validate_model_syntax()` before `resolve_model_alias_with_config()`. All `--model` and `--model=` parse paths call it. No API call ever reached with malformed input. Residual gap (model provenance in status JSON — raw input vs resolved value) was split off as #148 (see below).
 
 129. **MCP server startup blocks credential validation — `claw <prompt>` with any `.claw.json` `mcpServers` entry awaits the MCP server's stdio handshake BEFORE checking whether the operator has Anthropic credentials. With no `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` set and `mcpServers.everything = { command: "npx", args: ["-y", "@modelcontextprotocol/server-everything"] }` configured, the CLI hangs forever (verified via `timeout 30s` — still in MCP startup at 30s with three repeated `"Starting default (STDIO) server..."` lines), instead of fail-fasting with the same `missing Anthropic credentials` error that fires in milliseconds when no MCP is configured. A misconfigured-but-running MCP server (one that spawns successfully but never completes its `initialize` handshake) wedges every `claw <prompt>` invocation permanently. A misconfigured MCP server with a slow-but-eventually-succeeding init (npx download, container pull, network roundtrip) burns startup latency on every Prompt invocation regardless of whether the LLM call would even succeed. This is the runtime-side companion to #102's config-time MCP diagnostic gap: #102 says doctor doesn't surface MCP reachability; #129 says the Prompt path's reachability check is implicit, blocking, retried, and runs *before* the cheaper auth precondition that should run first** — dogfooded 2026-04-20 on main HEAD `d284ef7` from `/tmp/claw-mcp-test` with `env -i PATH=$PATH HOME=$HOME` (all auth env vars unset).
 
@@ -5014,3 +5069,1077 @@ ear], /color [scheme], /effort [low|medium|high], /fast, /summary, /tag [label],
    **Blocker.** None. Reuses existing `stale_base` module; no new logic needed, just a missing call site.
 
    **Source.** Jobdori dogfood 2026-04-20 against `/tmp/jobdori-129-mcp-cred-order` + `/tmp/stale-branch` in response to 10-min cron cycle. Confirmed: `claw doctor` on branch 5 commits behind main says "Status: ok" but `prompt` dispatch would warn "worktree HEAD does not match expected base commit." Gap is a missing invocation of the already-correct `run_stale_base_preflight()` in the `doctor` action handler. Joins **Boot preflight / doctor contract (#80–#83, #114)** family — doctor is the single machine-readable preflight surface; missing checks degrade operator trust. Also relates to **Silent-state inventory** cluster (#102/#127/#129/#245) because stale-base is a runtime truth ("my branch is behind main") that the preflight surface (doctor) does not expose.
+
+## Pinpoint #135. `claw status --json` missing `active_session` boolean and `session.id` cross-reference — two surfaces that should be unified are inconsistent
+
+**Gap.** `claw status --json` exposes a snapshot of the runtime state but does not include (1) a stable `session.id` field (filed as #134 — the fix from the other side is to emit it in lane events; the consumer side needs it queryable via `status` too) and (2) an `active_session: bool` that tells an orchestrator whether the runtime currently has a live session in flight. An external orchestrator (Clawhip, remote agent) running `claw status --json` after sending a prompt has no machine-readable way to confirm whether the session is alive, idle, or stalled without parsing log output.
+
+**Trace path.**
+- `claw status --json` (dispatcher in `main.rs` `CliAction::Status`) renders a `StatusReport` struct that includes `git_state`, `config`, `model`, `provider` — but no `session_id` or `active_session` fields.
+- `claw status` (text mode) also omits both.
+- The `session.id` fix from #134 introduces a UUID at session init; it should be threaded through to `StatusReport` so the round-trip is complete: emit on startup event → queryable via `status --json` → correlatable in lane events.
+
+**Fix shape (~30 lines).**
+1. Add `session_id: Option<String>` and `active_session: bool` to `StatusReport` struct. Both `null`/`false` when no session is active. When a session is running, `session_id` is the same UUID emitted in the startup lane event (#134).
+2. Thread the session state into the `status` handler via a shared `Arc<Mutex<SessionState>>` or equivalent (same mechanism #134 uses for startup event emission).
+3. Text-mode `claw status` surfaces the value: `Session: active (id: abc123)` or `Session: idle`.
+4. Regression tests: (a) `claw status --json` before any prompt → `active_session: false, session_id: null`. (b) `claw status --json` during a prompt session → `active_session: true, session_id: <uuid>`. (c) UUID matches the `session.id` in the first lane event of the same run.
+
+**Acceptance.** An orchestrator can poll `claw status --json` and determine: is there a live session? What is its correlation ID? Does it match the ID from the last startup event? This closes the round-trip opened by #134.
+
+**Blocker.** Depends on #134 (session.id generation at init). Can be filed and implemented together.
+
+**Source.** Jobdori dogfood 2026-04-21 06:53 KST on main HEAD `2c42f8b` during recurring cron cycle. Direct sibling of #134 — #134 covers the event-emission side, #135 covers the query side. Joins **Session identity completeness** (§4.7) and **status surface completeness** cluster (#80/#83/#114/#122). Natural bundle: **#134 + #135** closes the full session-identity round-trip. Session tally: ROADMAP #135.
+
+## Pinpoint #134. No run/correlation ID at session boundary — every observer must infer session identity from timing or prompt content
+
+   **Gap.** When a `claw` session starts, no stable correlation ID is emitted in the first structured event (or any event). Every observer — lane event consumer, log aggregator, Clawhip router, test harness — has to infer session identity from timing proximity or prompt content. If two sessions start in close succession there is no unambiguous way to attribute subsequent events to the correct session. `claw status --json` returns session metadata but does not expose an opaque stable ID that could be used as a correlation key across the event stream.
+
+   **Fix shape.**
+   - Emit `session.id` (opaque, stable, scoped to this boot) in the first structured event at startup
+   - Include same ID in all subsequent lane events as `session_id` field
+   - Expose via `claw status --json` so callers can retrieve the active session's ID from outside
+   - Add regression: golden-fixture asserting `session.id` is present in startup event and value matches across a multi-event trace
+
+   **Acceptance.** Any observer can correlate all events from a session using `session_id` without parsing prompt content or relying on timestamp proximity. `claw status --json` exposes the current session's ID.
+
+   **Blocker.** None. Requires a UUID/nanoid generated at session init and threaded through the event emitter.
+
+   **Source.** Jobdori dogfood 2026-04-21 01:54 KST on main HEAD `50e3fa3` during recurring cron cycle. Joins **Session identity completeness at creation time** (ROADMAP §4.7) — §4.7 covers identity fields at creation time; #134 covers the stable correlation handle that ties those fields to downstream events. Joins **Event provenance / environment labeling** (§4.6) — provenance requires a stable anchor; without `session.id` the provenance chain is broken at the root. Natural bundle with **#241** (no startup run/correlation id, filed by gaebal-gajae 2026-04-20) — #241 approached from the startup cluster; #134 approaches from the event-stream observer side. Same root fix closes both. Session tally: ROADMAP #134.
+
+## Pinpoint #136. `--compact` flag output is not machine-readable — compact turn emits plain text instead of JSON when `--output-format json` is also passed
+
+**Gap.** `claw --compact <prompt>` runs a prompt turn with compacted output (tool-use suppressed, final assistant text only). But `run_with_output()` routes on `(output_format, compact)` with an explicit early-return match: `CliOutputFormat::Text if compact => run_prompt_compact(input)`. The `CliOutputFormat::Json` branch is never reached when `--compact` is set. Result: passing `--compact --output-format json` silently produces plain-text output — the compact flag wins and the format flag is silently ignored. No warning or error is emitted.
+
+**Trace path.**
+- `rust/crates/rusty-claude-cli/src/main.rs:3872-3879` — `run_with_output()` match:
+  ```
+  CliOutputFormat::Text if compact => self.run_prompt_compact(input),
+  CliOutputFormat::Text => self.run_turn(input),
+  CliOutputFormat::Json => self.run_prompt_json(input),
+  ```
+  The `Json` arm is unreachable when `compact = true` because the first arm matches first regardless of `output_format`.
+- `run_prompt_compact()` at line 3879 calls `println!("{final_text}")` — always plain text, no JSON envelope.
+- `run_prompt_json()` at line 3891 wraps output in a JSON object with `message`, `model`, `iterations`, `usage`, `tool_uses`, `tool_results`, etc.
+
+**Fix shape (~20 lines).**
+1. Add a `CliOutputFormat::Json if compact` arm (or merge compact flag into `run_prompt_json` as a parameter) that produces a JSON object with `message: <final_text>` and a `compact: true` marker. Tool-use fields remain present but empty arrays (consistent with compact semantics — tools ran but are not returned verbatim).
+2. Emit a warning or `error.kind: "flag_conflict"` if conflicting flags are passed in a way that silently wins (or document the precedence explicitly in `--help`).
+3. Regression tests: `claw --compact --output-format json <prompt>` must produce valid JSON with at minimum `{message: "...", compact: true}`.
+
+**Acceptance.** An orchestrator that requests compact output for token efficiency AND machine-readable JSON gets both. Silent flag override is never a correct behavior for a tool targeting machine consumers.
+
+**Blocker.** None. Additive change to existing match arms.
+
+**Source.** Jobdori dogfood 2026-04-21 12:25 KST on main HEAD `8b52e77` during recurring cron cycle. Joins **Output format completeness** cluster (#90/#91/#92/#127/#130) — all surfaces that produce inconsistent or plain-text fallbacks when JSON is requested. Also joins **CLI/REPL parity** (§7.1) — compact is available as both `--compact` flag and `/compact` REPL command; JSON output gap affects only the flag path. Session tally: ROADMAP #136.
+
+## Pinpoint #138. Dogfood cycle report-gate opacity — nudge surface collapses "bundle converged", "follow-up landed", and "pre-existing flake only" into single closure shape
+
+**Gap.** When a dogfood nudge triggers on a branch with landed work, the report surface emits status like "fixed 3 tests, pushed branch, 1 unrelated red remains" — but downstream nudges cannot distinguish:
+1. `bundle converged, merge-ready` (e.g., #134/#135 branch after fixes)
+2. `follow-up landed on main, branch still valid` (e.g., #137 + #136 fixes after #134/#135 was ready)
+3. `only pre-existing flake remains, no new regressions` (e.g., `resume_latest...` test failure on main that also fails on feature branch)
+4. `work still in flight, blocker not yet resolved`
+5. `merged and closed, re-nudge is a dup`
+
+Result: repeat nudges look identical whether the prior work converged or is still broken. Claws re-open what was already resolved, burning cycles on rediscovery.
+
+**Concrete example from this session:**
+- 14:30 nudge triggered on bundle already clear (14:25)
+- Reported finding was "nudge closure-state opacity" but manifested as "should we re-nudge or not?"
+- No explicit surface like "status: done", "last-updated: 2026-04-21T14:25", "next-action: none" that stops re-nudges on unchanged state
+
+**Fix shape (~30-50 lines, surfaces not code).**
+1. Dogfood report should carry an explicit **closure state** field: `converged`, `follow-up-landed`, `pre-existing-flake-only`, `in-flight`, `merged`, `dup`.
+2. Each state has a **last-updated timestamp** (when report was filed) and **next-action** (null if converged, or describe blocker).
+3. Nudge logic checks prior report state: if `converged` + timestamp < 10 min old, skip nudge and post "still converged as of HH:MM, no action".
+4. If state changed (e.g., new commits landed), emit **state transition** explicitly: "bundle done (14:25) → follow-up landed (14:42)".
+5. Store closure state in a **shared metadata surface** (Discord message edit, ROADMAP inline, or compact JSON file) so next cycle can read it.
+
+**Acceptance.**
+- Repeat nudges on converged work are replaced with "no change since last report" (skip).
+- State transitions are explicit: "was X, now Y" instead of ambiguous "X and also Y".
+- Claws can scan closure states and prioritize fresh work over already-handled bundles.
+
+**Blocker.** Design question: **where should closure state live?** Options:
+- Edit the prior Discord message with a closure tag (e.g., 🟢 CONVERGED).
+- Add a `.dogfood-closure.json` file to the worktree branch that tracks state.
+- File a new ROADMAP entry per bundle completion (meta-tracking).
+- Embedded in claw-code CLI output (machine-readable, but creates coupling).
+
+Current state is **design question unresolved**. Implementation is straightforward once closure-state model is settled.
+
+**Source.** Jobdori dogfood 2026-04-21 14:25-14:47 KST — multi-cycle convergence pattern exposed by repeat nudges on #134/#135 bundle. Joins **Dogfood loop observability** (related to earlier §4.7 session-identity, but one level up — session-identity is plumbing, closure-state is the **reporting contract**). Also joins **False-green report gating** (from 14:05 finding) — this is the downstream effect: unclear reports beget re-nudges on stale work.
+
+Session tally: ROADMAP #138.
+
+### Evidence for #138 — feat/134-135-session-identity branch is pushed but no PR was opened (2026-04-21 15:05)
+
+**Concrete gap observed:**
+- Branch `feat/134-135-session-identity` pushed to `origin` at `7235260` (commits `f55612e`, `2b7095e`, `230d97a`, `7235260`)
+- Dogfood loop declared bundle "merge-ready" at 14:25
+- ~40 min elapsed; no PR opened, no merge, branch still unmerged
+- Meanwhile #136 and #137 landed directly on main (`a8beca1`, `21adae9`) without going through the branch
+
+**Direct verification of #135 on main:**
+- `env -i $BIN status --output-format json` on main HEAD `768c1ab` shows `active_session: null, session_id: null`
+- Fields exist in JSON schema (added by schema-only?) but values are None because the producer plumbing (`#134`) is not on main
+- #135 consumer relies on #134 producer; both live on feat/134-135 only
+
+**Impact:**
+- `claw status --output-format json` on main returns JSON without the #135 session identity signals (because they're only on feat/134-135)
+- Orchestrators that shipped using the 13:00 "round-trip proof" report believing #134+#135 was merge-ready will get null fields
+- Evidence for #138: "closure-state" = "pushed branch" ≠ "merged" ≠ "in-PR" — nudge surface collapses all three
+
+**Proposed closure-state transition:**
+1. `pushed` — branch exists on origin but no PR (current state for feat/134-135)
+2. `in-PR` — PR open, review pending
+3. `approved` — PR approved, awaiting merge
+4. `merged` — in main
+5. `deployed` — if applicable
+6. `abandoned` — PR closed without merge
+
+Nudge surface should report explicit state + timestamp: `"feat/134-135 state=pushed (no PR) since 13:00; no closure action taken"` instead of ambiguous "merge-ready."
+
+**Token/permission note:**
+- `code-yeongyu` token has write access to push branches to `ultraworkers/claw-code` but lacks `createPullRequest` permission (GraphQL 404)
+- Issues are disabled on the repo (can't open issue-based tracking)
+- Means closure-state tracking must live inside the repo (ROADMAP) or in an external surface (Discord message edits, `.dogfood-closure.json`)
+
+**Filed:** 2026-04-21 15:05 KST as evidence for #138 by Jobdori dogfood loop.
+
+## Pinpoint #139. `claw state` error message refers to "worker" concept that is not discoverable via `--help` or any documented command — error is unactionable for claws and CI
+
+**Gap.** `claw state` (both text and JSON output modes) returns this error when no worker-state.json exists:
+```
+error: no worker state file found at /private/tmp/cd-16/.claw/worker-state.json — run a worker first
+```
+
+**The problem:** "worker" is a concept that has **zero discoverability path** from the CLI surface:
+1. `claw --help` has no mention of workers, `claw worker`, or worker state
+2. There is no `claw worker` subcommand (not listed in help, not in the 16 known subcommands)
+3. No hint in the error itself about what command triggers worker state creation
+4. A claw, CI pipeline, or first-time user hitting this error has no actionable next step
+
+**Verified on main HEAD `f3f6643` (2026-04-21 15:58 KST):**
+```
+$ claw state --output-format json
+{"error":"no worker state file found at /private/tmp/cd-16/.claw/worker-state.json — run a worker first","type":"error"}
+```
+
+**Trace path.**
+- `rust/crates/rusty-claude-cli/src/main.rs` — `handle_state()` or equivalent returns this error when `.claw/worker-state.json` is missing.
+- No internal documentation on what produces `worker-state.json` (likely background worker session, but not surfaced)
+- `claw bootstrap-plan` mentions phases like `DaemonWorkerFastPath` and `BackgroundSessionFastPath` — suggesting workers are part of daemon/background execution — but this is internal architecture jargon, not user-facing
+
+**Why this is a clawability gap.**
+1. **Error references concept that is not discoverable.** Product Principle violation: "Errors must be actionable." Current error is descriptive but unactionable.
+2. **Claws can't self-heal.** A claw orchestrator that gets this error cannot construct a follow-up command because the remediation is not in the error or in `--help`.
+3. **Dogfood blocker.** Automated test setups that include `claw state` as a health check will fail silently for users who haven't triggered the worker path.
+4. **Internal architecture leaks into user surface.** The `worker` / `daemon` / `background session` distinction is internal runtime nomenclature, not user-facing workflow.
+
+**Fix shape (~20-40 lines).**
+1. **Error message should include remediation.** Change error to:
+   ```json
+   {
+     "error": "no worker state file found at <path> — run `claw` (interactive REPL) or `claw prompt <text>` to produce worker state",
+     "type": "error",
+     "hint": "Worker state is created when claw executes a prompt (REPL or one-shot). If you have run claw but still see this, check that your session wrote to .claw/worker-state.json.",
+     "next_action": "claw prompt \"hello\""
+   }
+   ```
+2. **Add `claw --help` reference.** Document under `Flags` or `Subcommand overview` that `claw state` requires prior execution.
+3. **Consistency with typed-error envelope** (ROADMAP §4.44): include `operation: "state-read"`, `target: "<path>"`, `retryable: false` fields for machine consumers.
+
+**Acceptance.**
+- `claw state` error text explicitly names the command(s) that produce worker state
+- `--help` has at least one line documenting the state/worker relationship
+- A claw reading the JSON error gets a structured `next_action` field
+
+**Blocker.** None. Pure error-text + doc fix. ~30 lines.
+
+**Source.** Jobdori dogfood 2026-04-21 16:00 KST on main HEAD `f3f6643`. Joins **error-message-quality** cluster (related to §4.44 typed error taxonomy and §5 failure class enumeration). Joins **CLI discoverability** cluster (#108 did-you-mean for typos, #127 --json on diagnostic verbs). Session tally: ROADMAP #139.
+
+## Pinpoint #141. `claw <subcommand> --help` has 5 different behaviors — inconsistent help surface breaks discoverability
+
+**Gap.** Running `<subcommand> --help` has five different behaviors depending on which subcommand you pick. This breaks the expected CLI contract that `<subcommand> --help` returns subcommand-specific help.
+
+**Matrix (verified on main HEAD `27ffd75` 2026-04-21 16:59 KST):**
+
+| Subcommand | Behavior | Status |
+|---|---|---|
+| `status`, `sandbox`, `doctor`, `skills`, `agents`, `mcp`, `acp` | Subcommand-specific help | ✅ correct |
+| `version` | Global `claw --help` | ⚠️ inconsistent |
+| `init`, `export`, `state` | Global `claw --help` | ⚠️ inconsistent |
+| `dump-manifests`, `system-prompt` | `error: unknown <cmd> option: --help` | ❌ broken |
+| `bootstrap-plan` | Prints phases JSON (not help at all) | ❌ broken |
+
+**Concrete repro:**
+```
+$ claw system-prompt --help
+error: unknown system-prompt option: --help
+
+$ claw dump-manifests --help
+error: unknown dump-manifests option: --help
+
+$ claw bootstrap-plan --help
+- CliEntry
+- FastPathVersion
+...
+
+$ claw init --help
+claw v0.1.0
+Usage:
+  claw [--model MODEL] ...    # this is global help, not init-specific
+```
+
+**Why this is a clawability gap.**
+1. **Product principle violation**: every CLI subcommand should have a consistent `<cmd> --help` contract that returns subcommand-specific help.
+2. **CI/orchestration hazard**: a claw script that tries `<cmd> --help | grep <option>` gets structural behavior differences — some return 0, some return 1 with "unknown option", some return global help that doesn't mention the subcommand at all.
+3. **Discoverability asymmetry**: 7 subcommands have good help, 4 have global-help fallback, 2 error out, 1 produces irrelevant output. No documented reason for the split.
+4. **Follow-on from #108**: #108 fixed subcommand typos at the dispatch layer. #141 is the next layer up — even valid subcommands have inconsistent `--help` dispatch.
+
+**Fix shape (~50 lines).**
+1. For subcommands that return a structured help block (`status`, `sandbox`, `doctor`, `skills`, `agents`, `mcp`, `acp`): this is the model. Use the same pattern.
+2. For `init`, `export`, `state`, `version`: add subcommand-specific help block or explicitly dispatch `--help` to `claw --help` (consistent fallback is OK; returning global help that doesn't mention the subcommand is not).
+3. For `dump-manifests`, `system-prompt`: fix the parser to recognize `--help` as a dispatch rather than unknown flag. Add subcommand-specific help.
+4. For `bootstrap-plan`: add `--help` dispatch to explain what the subcommand does (currently prints phases, which is the primary output but not help text).
+5. Add a consistency test: `for cmd in <list>: assert exitcode_of("claw $cmd --help") == 0 and contains help text`.
+
+**Acceptance.**
+- All 14 subcommands have `<cmd> --help` exit 0 with relevant help text
+- No "unknown option" errors from `<cmd> --help`
+- Consistency test in the regression suite
+
+**Blocker.** None. Scoped to CLI parser + help text. ~50 lines + test.
+
+**Source.** Jobdori dogfood 2026-04-21 16:59 KST on main HEAD `27ffd75`. Joins **CLI/REPL parity** cluster (§7.1) and **discoverability** cluster (#108 did-you-mean, #127 --json on diagnostic verbs, #139 worker concept unactionable). Session tally: ROADMAP #141.
+
+## Pinpoint #142. `claw init --output-format json` dumps human text into `message` — no structured fields for created/skipped files
+
+**Gap.** `claw init --output-format json` emits a valid JSON envelope, but the payload is entirely a human-formatted multi-line text block packed into `message`. There are no structured fields to tell a claw script which files were created, which were skipped, or what the project path was.
+
+**Verified on main HEAD `21b377d` 2026-04-21 17:34 KST.**
+
+**Actual output (fresh directory, everything created):**
+```json
+{
+  "kind": "init",
+  "message": "Init\n  Project          /private/tmp/cd-1730b\n  .claw/           created\n  .claw.json       created\n  .gitignore       created\n  CLAUDE.md        created\n  Next step        Review and tailor the generated guidance"
+}
+```
+
+**Idempotent second call (everything skipped):**
+```json
+{
+  "kind": "init",
+  "message": "Init\n  Project          /private/tmp/cd-1730b\n  .claw/           skipped (already exists)\n  .claw.json       skipped (already exists)\n  .gitignore       skipped (already exists)\n  CLAUDE.md        skipped (already exists)\n  Next step        Review and tailor the generated guidance"
+}
+```
+
+**Compare `claw status --output-format json` (the model):**
+```json
+{
+  "kind": "status",
+  "model": "claude-opus-4-6",
+  "permission_mode": "danger-full-access",
+  "sandbox": { "active": false, "enabled": true, "fallback_reason": "...", ... },
+  "usage": { "cumulative_input": 0, "messages": 0, "turns": 0, ... },
+  "workspace": { "changed_files": 0, ... }
+}
+```
+
+**Why this is a clawability gap.**
+1. **Substring matching required**: to tell whether `.claw/` was created vs skipped, a claw has to grep the `message` string for `"created"` or `"skipped (already exists)"`. Not a contract — human-language fragility.
+2. **No programmatic idempotency signal**: CI/orchestration cannot easily tell "first run produced new files" from "second run was no-op". Both paths end up with `kind: init` and a free-form message.
+3. **Inconsistent with `status`/`sandbox`/`doctor`**: those subcommands have first-class structured JSON. `init` does not. Product contract asymmetry.
+4. **Path isn't a field**: the project path is embedded in the same string. No `project_path` key.
+5. **Joins JSON-output cluster** (#90, #91, #92, #127, #130, #136): every one of those was a JSON contract shortfall where the command technically emitted JSON but did not emit *useful* JSON.
+
+**Fix shape (~40 lines).**
+Add structured fields alongside `message` (keep `message` for backward compat):
+```json
+{
+  "kind": "init",
+  "project_path": "/private/tmp/cd-1730b",
+  "created": [".claw", ".claw.json", ".gitignore", "CLAUDE.md"],
+  "skipped": [],
+  "next_step": "Review and tailor the generated guidance",
+  "message": "Init\n  Project..."
+}
+```
+
+On idempotent call: `created: []`, `skipped: [".claw", ".claw.json", ...]`.
+
+**Acceptance.**
+- `claw init --output-format json` has `created`, `skipped`, `project_path`, `next_step` top-level fields
+- `created.len() + skipped.len() == 4` on standard init
+- Idempotent call has empty `created`
+- Existing `message` field preserved for text consumers (deprecation path only if needed)
+- Regression test: JSON schema assertions for both fresh + idempotent cases
+
+**Blocker.** None. Scoped to `init` subcommand JSON serializer. ~40 lines.
+
+**Source.** Jobdori dogfood 2026-04-21 17:34 KST on main HEAD `21b377d`. Joins **JSON output completeness** cluster (#90/#91/#92/#127/#130/#136). Session tally: ROADMAP #142.
+
+## Pinpoint #143. `claw status` hard-fails on malformed MCP config; `claw doctor` degrades gracefully — inconsistent contract around partial config breakage
+
+**Gap.** Running `claw status` against a workspace with a malformed `.claw.json` (e.g., one `mcpServers.*` entry missing the required `command` field) crashes out at parse time with a terse error, even when the rest of the config is valid and most status fields could still be reported. `claw doctor` handles the exact same file correctly, embedding the parse error inside the typed envelope as `status: "fail"` on the `config` check while still reporting `auth`, `install source`, `workspace`, etc.
+
+This is both an inconsistency (two diagnostic surfaces behave differently on identical input) and a violation of Product Principle #5 (*Partial success is first-class*).
+
+**Verified on main HEAD `e73b6a2` (2026-04-21 18:30 KST):**
+
+Given a `.claw.json` with one valid server and one malformed entry:
+```json
+{
+  "mcpServers": {
+    "everything": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-everything"] },
+    "missing-command": { "args": ["arg-only-no-command"] }
+  }
+}
+```
+
+`claw status` (both text and JSON modes):
+```
+$ claw status
+error: /Users/.../.claw.json: mcpServers.missing-command: missing string field command
+Run `claw --help` for usage.
+
+$ claw status --output-format json
+{"error":"/Users/.../.claw.json: mcpServers.missing-command: missing string field command","type":"error"}
+```
+
+`claw doctor --output-format json` on the *same* file:
+```json
+{
+  "checks": [
+    {"name":"auth", "status":"warn", ...},
+    {
+      "name":"config",
+      "status":"fail",
+      "load_error":"/Users/.../.claw.json: mcpServers.missing-command: missing string field command",
+      "discovered_files":["..."],
+      "discovered_files_count":5,
+      "summary":"runtime config failed to load: ..."
+    },
+    {"name":"install_source", "status":"ok", ...},
+    ...
+  ]
+}
+```
+
+Doctor keeps going and produces a full typed report. Status refuses to produce any fields at all.
+
+**Why this is a clawability gap.**
+1. **Two surfaces, one config, two behaviors.** A claw cannot rely on a stable contract: `doctor` treats malformed MCP as a classifiable condition; `status` treats it as a fatal parse error. Same input, opposite response.
+2. **Partial-success violation (Principle #5).** The malformed field is scoped to one MCP server entry. Workspace state, current model, permission mode, session info, and git state are all independently resolvable and would be useful to report even when one MCP server entry is unparseable. A claw debugging a misconfig needs to see which fields *do* work.
+3. **No per-field error surface.** Even the bare error string lacks structure (`mcpServers.missing-command: missing string field command` is a parse trace, not a typed error object). No `error_kind`, no `retryable`, no `affected_field`, no `hint`. Claws can't route on this.
+4. **Clawhip health checks.** Clawhip uses `claw status --output-format json` as a liveness probe on managed lanes. A single broken MCP entry takes down the probe entirely, not just the MCP subsystem, making "is the workspace usable?" impossible to answer without also running `doctor`.
+5. **Onboarding friction.** A user who copy-pastes an MCP config and mistypes one field discovers this only when `status` stops working. Doctor tells them what's wrong; status does not. First-run users are more likely to reach for `status`.
+
+**Fix shape (~60-100 lines, two-phase).**
+
+**Phase 1 (immediate, small):** Make `claw status` degrade gracefully like `doctor` does. When config load fails:
+- Report `config_load_error` as a first-class field with the parse-error string.
+- Still report what can be resolved without config: effective model (from env + CLI args), permission mode, sandbox posture, git state, workspace metadata.
+- Set top-level `status: "degraded"` in the envelope so claws can distinguish "status ran but config is broken" from "status ran cleanly".
+- Keep the existing error text as a `config_load_error` string for humans, but do not abort.
+
+**Phase 2 (medium, joins typed-error taxonomy #4.44):** Typed error object for config-parse failures:
+```json
+"config_load_error": {
+  "kind": "config_parse",
+  "retryable": false,
+  "file": "/Users/.../.claw.json",
+  "field_path": "mcpServers.missing-command",
+  "message": "missing string field command",
+  "hint": "each mcpServers entry requires a `command` string; see USAGE.md#mcp"
+}
+```
+
+**Acceptance.**
+- `claw status` on a workspace with one malformed MCP entry returns exit code 0 with a top-level `status: "degraded"` (or equivalent typed marker) and populated workspace/git/model/permission fields.
+- The malformed MCP error surfaces as a structured `config_load_error` field, not as a bare string at the envelope root.
+- `claw status --output-format json` contract matches `claw doctor --output-format json` on the same input: both must report the config parse error, neither may hard-fail.
+- Regression test: inject malformed MCP config, assert `status` returns 0 with degraded marker and `config_load_error.field_path == "mcpServers.missing-command"`.
+
+**Blocker.** None for Phase 1. Phase 2 depends on the typed-error taxonomy landing (ROADMAP §4.44), but Phase 1 can ship independently and be tightened later.
+
+**Source.** Jobdori dogfood 2026-04-21 18:30 KST on main HEAD `e73b6a2`, surfaced by running `claw status` in `/Users/yeongyu/clawd` which contains a `.claw.json` with deliberately broken MCP entries. Joins **partial-success / degraded-mode** cluster (Principle #5, Phase 6) and **surface consistency** cluster (#141 help-contract unification, #108 typo guard). Session tally: ROADMAP #143.
+
+## Pinpoint #144. `claw mcp` hard-fails on malformed MCP config — same surface inconsistency as #143, one command over
+
+**Gap.** With `claw status` fixed in #143 Phase 1, `claw mcp` is now the remaining diagnostic surface that hard-fails on a malformed `.claw.json`. Same input, same parse error, same partial-success violation.
+
+**Verified on main HEAD `e2a43fc` (2026-04-21 18:59 KST):**
+
+Same `.claw.json` used for #143 repro (one valid `everything` server + one malformed `missing-command` entry).
+
+`claw mcp`:
+```
+error: /Users/.../.claw.json: mcpServers.missing-command: missing string field command
+Run `claw --help` for usage.
+```
+Exit 1. No list. The well-formed `everything` server is invisible.
+
+`claw mcp --output-format json`:
+```json
+{"error":"/Users/.../.claw.json: mcpServers.missing-command: missing string field command","type":"error"}
+```
+Exit 1. Same story.
+
+`claw status --output-format json` on the same file (post-#143):
+```json
+{"kind":"status","status":"degraded","config_load_error":"...","workspace":{...},"sandbox":{...},...}
+```
+Exit 0. Full envelope with error surfaced.
+
+**Why this is a clawability gap (same family as #143).**
+1. **Principle #5 violation**: partial success is first-class. One malformed entry shouldn't make the entire MCP subsystem invisible.
+2. **Surface inconsistency (cluster of 3)**: after #143 Phase 1, the behavior matrix is:
+   - `doctor` — degraded envelope ✅
+   - `status` — degraded envelope ✅ (#143)
+   - `mcp` — hard-fail ❌ (this pinpoint)
+3. **Clawhip impact**: `claw mcp --output-format json` is used by orchestrators to detect which MCP servers are available before invoking tools. A broken probe forces clawhip to fall back to doctor parse, which is suboptimal.
+
+**Fix shape (~40 lines, mirrors #143 Phase 1).**
+1. Make `render_mcp_report_json_for()` and `render_mcp_report_for()` catch the `ConfigError` at `loader.load()?`.
+2. On parse failure, emit a degraded envelope:
+   ```json
+   {
+     "kind": "mcp",
+     "action": "list",
+     "status": "degraded",
+     "config_load_error": "...",
+     "working_directory": "...",
+     "configured_servers": 0,
+     "servers": []
+   }
+   ```
+3. Text mode: prepend a "Config load error" block (same shape as #143) before the "MCP" block.
+4. Exit 0 so downstream probes don't treat a parse error as process death.
+
+**Acceptance.**
+- `claw mcp` and `claw mcp --output-format json` on a workspace with malformed config exit 0.
+- JSON mode includes `status: "degraded"` and `config_load_error` field.
+- Text mode shows the parse error in a separate block, not as the only output.
+- Clean path (no config errors) still returns `status: "ok"` (or equivalent — align with #143 serializer).
+- Regression test: inject malformed config, assert mcp returns degraded envelope.
+
+**Blocker.** None. Mirrors #143 Phase 1 shape exactly.
+
+**Future phase (joins #143 Phase 2).** When typed-error taxonomy lands (§4.44), promote `config_load_error` from string to typed object across `doctor`, `status`, and `mcp` in one pass.
+
+**Source.** Jobdori dogfood 2026-04-21 18:59 KST on main HEAD `e2a43fc`. Joins **partial-success** cluster (#143, Principle #5) and **surface consistency** cluster. Session tally: ROADMAP #144.
+
+## Pinpoint #145. `claw plugins` subcommand not wired to CLI parser — word gets treated as a prompt, hits Anthropic API
+
+**Gap.** `claw plugins` (and `claw plugins list`, `claw plugins --help`, `claw plugins info <name>`, etc.) fall through the top-level subcommand match and get routed into the prompt-execution path. Result: a purely local introspection command triggers an Anthropic API call and surfaces `missing Anthropic credentials` to the user. With valid credentials, it would actually send the string `"plugins"` as a prompt to Claude, burning tokens for a local query.
+
+**Verified on main HEAD `faeaa1d` (2026-04-21 19:32 KST):**
+
+```
+$ claw plugins
+error: missing Anthropic credentials; export ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY before calling the Anthropic API
+
+$ claw plugins --output-format json
+{"error":"missing Anthropic credentials; ...","type":"error"}
+
+$ claw plugins --help
+error: missing Anthropic credentials; ...
+
+$ claw plugins list
+error: missing Anthropic credentials; ...
+
+$ ANTHROPIC_API_KEY=dummy claw plugins
+⠋ 🦀 Thinking...
+✘ ❌ Request failed
+error: api returned 401 Unauthorized (authentication_error)
+```
+
+Compare `agents`, `mcp`, `skills` — all recognized, all local, all exit 0:
+
+```
+$ claw agents
+No agents found.
+$ claw mcp
+MCP
+  Working directory ...
+  Configured servers 0
+```
+
+**Root cause.** In `rusty-claude-cli/src/main.rs`, the top-level `match rest[0].as_str()` parser has arms for `agents`, `mcp`, `skills`, `status`, `doctor`, `init`, `export`, `prompt`, etc., but **no arm for `plugins`**. The `CliAction::Plugins` variant exists, has a dispatcher (`print_plugins`), and is produced by `SlashCommand::Plugins` inside the REPL — but the top-level CLI path was never wired. Result: `plugins` matches neither a known subcommand nor a slash path, so it falls through to the default "run as prompt" behavior.
+
+**Why this is a clawability gap.**
+1. **Prompt misdelivery (explicit Clawhip category)**: the command string is sent to the LLM instead of dispatched locally. Real risk: without the credentials guard, `claw plugins` would send `"plugins"` as a user prompt to Claude, burning tokens.
+2. **Surface asymmetry**: `plugins` is the only diagnostic-adjacent command that isn't wired. Documentation, slash command, and dispatcher all exist; parser wiring was missed.
+3. **`--help` should never hit the network**. Anywhere.
+4. **Misleading error**: user running `claw plugins` sees an Anthropic credential error. No hint that `plugins` wasn't a recognized subcommand.
+
+**Fix shape (~20 lines).** Add a `"plugins"` arm to the top-level parser in `main.rs` that produces `CliAction::Plugins { action, target, output_format }`, following the same positional convention as `mcp` (`action` = first positional, `target` = second). The existing `CliAction::Plugins` handler (`LiveCli::print_plugins`) already covers text and JSON.
+
+**Acceptance.**
+- `claw plugins` exits 0 with plugins list (empty in a clean workspace, which is the honest state).
+- `claw plugins --output-format json` emits `{"kind":"plugin","action":"list",...}` with exit 0.
+- `claw plugins list` exits 0 and matches `claw plugins`.
+- `claw plugins info <name>` resolves through the existing handler.
+- No Anthropic network call occurs for any `plugins` invocation.
+- Regression test: parse `["claw", "plugins"]`, assert `CliAction::Plugins { action: None, target: None, .. }`.
+
+**Blocker.** None. `CliAction::Plugins` already exists with a working dispatcher.
+
+**Source.** Jobdori dogfood 2026-04-21 19:30 KST on main HEAD `faeaa1d` in response to Clawhip nudge. Joins **prompt misdelivery** cluster. Session tally: ROADMAP #145.
+
+## Pinpoint #146. `claw config` and `claw diff` are pure-local introspection commands but require `--resume SESSION.jsonl` wrapping
+
+**Gap.** Running `claw config` or `claw diff` directly exits with an error pointing to `claw --resume SESSION.jsonl /config` as the only path. Both commands are pure, read-only introspection: `config` reads files from disk and merges them; `diff` shells out to `git diff --cached` + `git diff`. Neither needs a session context to produce correct output.
+
+**Verified on main HEAD `7d63699` (2026-04-21 20:03 KST):**
+
+```
+$ claw config
+error: `claw config` is a slash command. Use `claw --resume SESSION.jsonl /config` or start `claw` and run `/config`.
+
+$ claw config --output-format json
+{"error":"`claw config` is a slash command. ...","type":"error"}
+
+$ claw diff
+error: `claw diff` is a slash command. Use `claw --resume SESSION.jsonl /diff` or start `claw` and run `/diff`.
+```
+
+Meanwhile `agents`, `mcp`, `skills`, `status`, `doctor`, `sandbox`, `plugins` (after #145) all work standalone.
+
+**Why this is a clawability gap.**
+1. **Synthetic friction**: requires a session file to inspect static disk state. A claw probing configuration has to spin up a session it doesn't need.
+2. **Surface asymmetry**: all other read-only diagnostics are standalone. `config` and `diff` are the remaining holdouts.
+3. **Pipeline-unfriendly**: `claw config --output-format json | jq` and `claw diff | less` are natural operator workflows; both are currently broken.
+4. **Both already have working JSON renderers** (`render_config_json`, `render_diff_json_for`) — infrastructure for top-level wiring exists.
+
+**Fix shape (~30 lines).** Add `"config"` and `"diff"` arms to the top-level parser in `main.rs` (mirroring #145's `plugins` wiring). Each dispatches to a new `CliAction` variant or to existing resume-supported renderers directly. Text mode uses `render_config_report` / `render_diff_report`; JSON mode uses `render_config_json` / `render_diff_json_for`. Remove `config` from `bare_slash_command_guidance`'s fallback allowlist only if explicitly gating (parser arm already short-circuits).
+
+**Acceptance.**
+- `claw config` exits 0 with discovered-file listing + merged-keys count.
+- `claw config --output-format json` emits typed envelope with discovered files and merged JSON.
+- `claw config env` / `claw config plugins` surface specific sections (matches `SlashCommand::Config { section }` semantics).
+- `claw diff` exits 0 with clean-tree message or staged/unstaged summary.
+- `claw diff --output-format json` emits typed envelope.
+- Regression tests: `parse_args(["config"])` → `CliAction::Config`; `parse_args(["diff"])` → `CliAction::Diff`.
+
+**Blocker.** None. Renderers exist and are resume-supported (proving they're pure-local).
+
+**Not applying to.** `hooks` (session-state-modifying, explicitly flagged "unsupported resumed slash command" in main.rs), `usage`, `context`, `tasks`, `theme`, `voice`, `rename`, `copy`, `color`, `effort`, `branch`, `rewind`, `ide`, `tag`, `output-style`, `add-dir` — all session-mutating or interactive-only.
+
+**Source.** Jobdori dogfood 2026-04-21 20:03 KST on main HEAD `7d63699` in response to Clawhip nudge. Joins **surface asymmetry** cluster (#145 sibling). Session tally: ROADMAP #146.
+
+## Pinpoint #147. `claw ""` / `claw "   "` silently fall through to prompt-execution path; empty-prompt guard is subcommand-only
+
+**Gap.** The explicit `claw prompt ""` path rejects empty/whitespace-only prompts with a clear error (`prompt subcommand requires a prompt string`, exit 1, no network call). The implicit fallthrough path — where any unrecognized first positional arg is treated as a prompt — has no such guard. Result: `claw ""`, `claw "   "`, and `claw "" ""` all get routed to the Anthropic call with an empty prompt string, which surfaces the misleading `missing Anthropic credentials` error.
+
+**Verified on main HEAD `f877aca` (2026-04-21 20:32 KST):**
+
+```
+$ claw prompt ""
+error: prompt subcommand requires a prompt string
+
+$ claw ""
+error: missing Anthropic credentials; export ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY ...
+
+$ claw "   "
+error: missing Anthropic credentials; ...
+
+$ claw "" ""
+error: missing Anthropic credentials; ...
+
+$ claw --output-format json ""
+{"error":"missing Anthropic credentials; ...","type":"error"}
+```
+
+With valid credentials, the empty string would be sent to Claude as a user prompt — burning tokens for nothing, or getting a model-side refusal for empty input.
+
+**Why this is a clawability gap.**
+1. **Inconsistent guard**: the `"prompt"` subcommand arm enforces `if prompt.trim().is_empty() { Err(...) }`, but the fallthrough `other` arm in the same match block does not. Same contract should apply to both paths.
+2. **Prompt misdelivery (Clawhip category)**: same root pattern as #145 (wrong thing gets treated as a prompt). Different manifestation — here it's an empty string, not a typo'd subcommand.
+3. **Misleading error surface**: user sees `missing Anthropic credentials` for a request that should never have reached the API layer at all.
+4. **Clawhip risk**: a misconfigured orchestrator passing `""` or `"   "` as a positional arg ends up paying API costs for empty prompts instead of getting fast feedback.
+
+**Fix shape (~5 lines).** In `parse_subcommand()`'s fallthrough `other` arm, add the same trim-based empty check already used in the `"prompt"` arm, with a message that distinguishes it from the `prompt` subcommand path (e.g. `"empty prompt: provide a command or non-empty prompt text"`). Happens before `looks_like_subcommand_typo` since typos aren't empty.
+
+**Acceptance.**
+- `claw ""` exits 1 with a clear "empty prompt" error, no credential check.
+- `claw "   "` exits 1 with the same error.
+- `claw "" ""` exits 1 with the same error.
+- `claw --output-format json ""` emits the error in typed envelope, exit 1.
+- `claw hello` still reaches the typo guard (#108), not the empty guard.
+- `claw prompt ""` still emits its own specific error.
+- Regression test: `parse_args([""])` → Err, `parse_args(["   "])` → Err.
+
+**Blocker.** None. 5-line change in `parse_subcommand()`.
+
+**Source.** Jobdori dogfood 2026-04-21 20:32 KST on main HEAD `f877aca` in response to Clawhip nudge. Joins **prompt misdelivery** cluster (#145 sibling). Session tally: ROADMAP #147.
+
+## Pinpoint #148. `claw status` JSON shows resolved model but not raw input or source — post-hoc "why did my --model flag behave this way?" requires re-reading argv
+
+**Gap.** After #128 closed (malformed model strings now rejected at parse time), the residual provenance gap from the original #124 pinpoint remains: `claw status --output-format json` surfaces only the resolved model string. No trace of whether the user passed `--model sonnet` (alias → resolved), `--model anthropic/claude-opus-4-6` (pass-through), or relied on env/config default. A claw debugging "which model actually runs if I invoke this?" has to inspect argv instead of reading a structured field.
+
+**Verified on main HEAD `4cb8fa0` (2026-04-21 20:40 KST):**
+
+```
+$ claw --model sonnet --output-format json status | jq '{model}'
+{"model": "claude-sonnet-4-6"}
+
+$ claw --model anthropic/claude-opus-4-6 --output-format json status | jq '{model}'
+{"model": "anthropic/claude-opus-4-6"}
+
+# Same resolved value can come from three different sources;
+# JSON envelope gives no way to distinguish.
+```
+
+**Why this is a clawability gap.**
+1. **Loss of origin information**: alias resolution collapses `sonnet` and `claude-sonnet-4-6` and `{"aliases":{"x":"claude-sonnet-4-6"}}` + `--model x` into one string. Debug forensics has to read argv.
+2. **Clawhip orchestration**: a clawhip dispatcher sending `--model` wants to confirm its flag was honored, not that the default kicked in (#105 model-resolution-source disagreement is adjacent).
+3. **Truth-audit / diagnostic-integrity**: the status envelope is supposed to be the single source of truth for "what would this process run as". Missing provenance weakens the contract.
+
+**Fix shape (~50 lines).** Add two fields to status JSON:
+- `model_source`: `"flag" | "env" | "config" | "default"` — where the model string came from.
+- `model_raw`: the user's original input (pre-alias-resolution). Null when source is `default`.
+
+Text mode appends a line: `Model source     flag (raw: sonnet)` or `Model source     default`.
+
+Threading: parser already knows the source (it's the arm that sets `model`). Propagate `(model, model_raw, model_source)` tuple through `CliAction::Status` and into `StatusContext`. Env/default resolution paths are in `resolve_repl_model*` helpers.
+
+**Acceptance.**
+- `claw --model sonnet --output-format json status` → `model: "claude-sonnet-4-6"`, `model_raw: "sonnet"`, `model_source: "flag"`.
+- `claw --model anthropic/claude-opus-4-6 --output-format json status` → `model_raw: "anthropic/claude-opus-4-6"`, `model_source: "flag"`.
+- `claw --output-format json status` (no flag) → `model_raw: null`, `model_source: "default"` (or `"env"` if `ANTHROPIC_MODEL` set; or `"config"` if `.claw.json` set `model`).
+- Text mode shows same provenance.
+- Regression test: parse_args + status_json_value roundtrip asserts each source value.
+
+**Blocker.** None. All resolution sites already exist; only plumbing + one serialization addition.
+
+**Not a regression of #128.** #128 was about rejecting malformed strings (now closed). #148 is about labeling the valid ones after resolution.
+
+**Source.** Jobdori dogfood 2026-04-21 20:40 KST on main HEAD `4cb8fa0` in response to Q's bundle hint. Split from historical #124 residual. Joins **truth-audit / diagnostic-integrity** cluster. Session tally: ROADMAP #148.
+
+## Pinpoint #149. `runtime::config::tests::validates_unknown_top_level_keys_with_line_and_field_name` flakes under parallel workspace test runs
+
+**Gap.** When `cargo test --workspace` runs with normal parallel test execution (default), `runtime::config::tests::validates_unknown_top_level_keys_with_line_and_field_name` intermittently fails. In isolation (`cargo test -p runtime validates_unknown_top_level_keys_with_line_and_field_name`), it passes deterministically. The same pattern affects other tests in `runtime/src/config.rs` and sibling test modules that share the `temp_dir()` naming strategy.
+
+**Verified on main HEAD `f84c7c4` (2026-04-21 20:50 KST):** witnessed during `cargo test --workspace` runs for #147 and #148 — one workspace run produced:
+
+```
+test config::tests::validates_unknown_top_level_keys_with_line_and_field_name ... FAILED
+test result: FAILED. 464 passed; 1 failed; 0 ignored; 0 measured
+```
+
+Same test passed on the next workspace run. Same test passes in isolation every time.
+
+**Root cause.** `runtime/src/config.rs` tests share this helper:
+
+```rust
+fn temp_dir() -> std::path::PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time should be after epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!("runtime-config-{nanos}"))
+}
+```
+
+Two weaknesses:
+1. **Timestamp-only namespacing**: on fast machines with coarse-grained clocks (or with tests starting within the same nanosecond bucket), two tests pick the same path. One races `fs::create_dir_all()` with another's `fs::remove_dir_all()`.
+2. **No label differentiation**: every test in the file calls `temp_dir()` and constructs sub-paths inside the shared prefix. A `fs::remove_dir_all(root)` in one test's cleanup may clobber a live sibling.
+
+Other crates in the workspace (`plugins::tests::temp_dir`, `runtime::git_context::tests::temp_dir`) already use the **labeled** form `temp_dir(label)` to segregate namespaces per-test. `runtime/src/config.rs` was missed in that sweep.
+
+**Fix shape (~30 lines).** Convert `temp_dir()` in `runtime/src/config.rs` to `temp_dir(label: &str)` mirroring the plugins/git_context pattern, plus add a PID + atomic counter suffix for double-strength collision resistance:
+
+```rust
+fn temp_dir(label: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("...").as_nanos();
+    let pid = std::process::id();
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("runtime-config-{label}-{pid}-{nanos}-{seq}"))
+}
+```
+
+Update each `temp_dir()` callsite in the file to pass a unique label (test function name usually works).
+
+**Acceptance.**
+- `cargo test --workspace` 10x consecutive runs all green (excluding pre-existing `resume_latest` flake which is orthogonal).
+- `cargo test -p runtime` 10x consecutive runs all green.
+- Cleanup `fs::remove_dir_all(root)` never races because `root` is guaranteed unique per-test.
+- No behavior change for tests already passing in isolation.
+
+**Blocker.** None. Mechanical rename + label addition.
+
+**Not applying to.** `plugins::tests::temp_dir` and `runtime::git_context::tests::temp_dir` already use the labeled form. The label pattern is the established workspace convention; this just applies it to the one holdout.
+
+**Source.** Jobdori dogfood 2026-04-21 20:50 KST, flagged during #147 and #148 workspace-test runs. Joins **test brittleness / flake** cluster. Session tally: ROADMAP #149.
+
+## Pinpoint #150. `resume_latest_restores_the_most_recent_managed_session` flakes due to symlink/canonicalization mismatch
+
+**Gap.** Test `resume_latest_restores_the_most_recent_managed_session` in `rusty-claude-cli/tests/resume_slash_commands.rs` intermittently fails when run as part of the workspace suite or in parallel.
+
+**Root cause.** `workspace_fingerprint(path)` hashes the workspace path string directly without canonicalization. On macOS, `/tmp` is a symlink to `/private/tmp`. The test creates a temp dir via `std::env::temp_dir().join(...)` which may return `/var/folders/...` (non-canonical). The test uses this non-canonical path to create sessions. When the subprocess spawns, `env::current_dir()` returns the canonical path `/private/var/folders/...`. The two fingerprints differ, so the subprocess looks in `.claw/sessions/<hash1>` while files are in `.claw/sessions/<hash2>`. Session discovery fails.
+
+**Verified on main HEAD `bc259ec` (2026-04-21 21:00 KST):** Test failed intermittently during workspace runs and consistently failed when run 5x in sequence before the fix.
+
+**Fix shape (~5 lines).** Call `fs::canonicalize(&project_dir)` after creating the directory but before passing it to `SessionStore::from_cwd()`. This ensures the test and subprocess use identical path representations when computing the fingerprint.
+
+```rust
+fs::create_dir_all(&project_dir).expect("project dir should exist");
+let project_dir = fs::canonicalize(&project_dir).unwrap_or(project_dir);
+let store = runtime::SessionStore::from_cwd(&project_dir).expect(...);
+```
+
+**Acceptance.**
+- `cargo test -p rusty-claude-cli --test resume_slash_commands` passes.
+- 5 consecutive runs all green (previously: 5/5 failed).
+- No behavior change; test now correctly isolates temp paths.
+
+**Blocker.** None.
+
+**Note.** This is the last known pre-existing test flake in the workspace. `resume_latest` was the only survivor from earlier sessions.
+
+**Source.** Jobdori dogfood 2026-04-21 21:00 KST, Q's "clean up remaining flake" hint led to root-cause analysis and fix. Session tally: ROADMAP #150.
+
+## Pinpoint #246. Reminder cron outcome ambiguity — no structured feedback on nudge delivery/skip/timeout
+
+**Gap (control-loop blocker).** The `clawcode-dogfood-cycle-reminder` cron triggers dogfood cycles every 10 minutes. When it times out (witnessed multiple times during 2026-04-21 sweep), there is no structured answer to: Was the nudge delivered? Did it fail before send? After send? Was it skipped due to an active cycle? Did the gateway drain and abort?
+
+**Impact.** Repeated timeouts produce scheduler fog instead of trustworthy dogfood pressure. Team cannot distinguish:
+- Silent delivery (nudge went out, cycle ran)
+- Delivery followed by subprocess crash (nudge reached Discord, but cycle had issues)
+- Timeout before send (cron died early)
+- Timeout after send (cron sent nudge, died before cleanup)
+- Deduplication (active cycle still running, nudge skipped)
+- Gateway draining (request in-flight when daemon shutdown)
+
+**Phase 1 spec (outcome schema).** Extend cron task results to include a `reminder_outcome` field with explicit values:
+- `"delivered"` — nudge successfully posted to Discord; next cycle can proceed
+- `"timed_out_before_send"` — cron died before posting; retry on next interval
+- `"timed_out_after_send"` — nudge posted (or should assume posted), but cleanup/logging timed out
+- `"skipped_due_to_active_cycle"` — previous cycle still running; no nudge issued
+- `"aborted_gateway_draining"` — reminding stopped because o p e n c l a w gateway is draining
+
+Deliverable: Update `clawcode-dogfood-cycle-reminder` task to emit this field on completion/timeout/skip.
+
+**Phase 2 (observability).** Log all five outcomes to Agentika and surface via `clawhip status` or similar monitoring surface so Q/gaebal-gajae can see nudge history.
+
+**Blocker.** Assigned to gaebal-gajae's domain (cron scheduling / o p e n c l a w orchestration). Not a claw-code CLI blocker; purely infrastructure/monitoring.
+
+**Source.** Q's direct observation during 2026-04-21 20:50–21:00 dogfood cycles: repeated timeouts with no way to diagnose. Session tally: ROADMAP #246.
+
+## Pinpoint #151. `workspace_fingerprint` path-equivalence contract gap (product, not just test)
+
+**Gap.** `workspace_fingerprint(path)` hashes the raw path string without canonicalization. Two callers passing equivalent paths (e.g. `/tmp/foo` vs `/private/tmp/foo` on macOS where `/tmp` is a symlink to `/private/tmp`) get different fingerprints and therefore different session stores. #150 was the test-side symptom; the product contract itself is still fragile.
+
+**Discovery path.** #150 fix (canonicalize in test) was a workaround. Real users hit this whenever:
+1. Embedded callers pass a raw `--data-dir` path that differs from canonical `env::current_dir()`
+2. Programmatic use of `SessionStore::from_cwd(some_path)` with a non-canonical input
+3. Symlinks elsewhere in the filesystem (not just macOS `/tmp`): NixOS store paths, Docker bind mounts, network mounts with case-insensitive normalization, etc.
+
+The REPL's default flow happens to work because `env::current_dir()` returns canonicalized paths on macOS. But anyone calling `SessionStore::from_cwd()` with a user-supplied path risks silent session-store divergence.
+
+**Root cause.** The function treats path-string equality and path-equivalence as the same thing:
+
+```rust
+pub fn workspace_fingerprint(workspace_root: &Path) -> String {
+    let input = workspace_root.to_string_lossy();  // ← raw bytes
+    // ... FNV-1a hash ...
+}
+```
+
+**Fix shape (~10 lines).** Canonicalize inside `SessionStore::from_cwd()` (and `from_data_dir`) before computing the fingerprint. Keep `workspace_fingerprint()` itself as a pure function of its input for determinism — the canonicalization is the caller's responsibility, but the two production entry points should always canonicalize.
+
+```rust
+pub fn from_cwd(cwd: impl AsRef<Path>) -> Result<Self, SessionControlError> {
+    let cwd = cwd.as_ref();
+    // #151: canonicalize so that equivalent paths (symlinks, ./foo vs /abs/foo)
+    // produce the same workspace_fingerprint. Falls back to the raw path when
+    // canonicalize() fails (e.g. directory doesn't exist yet — callers that
+    // haven't materialized the workspace).
+    let canonical_cwd = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let sessions_root = canonical_cwd
+        .join(".claw")
+        .join("sessions")
+        .join(workspace_fingerprint(&canonical_cwd));
+    fs::create_dir_all(&sessions_root)?;
+    Ok(Self {
+        sessions_root,
+        workspace_root: canonical_cwd,
+    })
+}
+```
+
+**Backward compatibility.** Existing users on macOS where `env::current_dir()` already returns canonical paths: no change in hash. Users who ever called with a non-canonical path: hash would change, but those sessions were already broken (couldn't be resumed from a canonical-path cwd). Net improvement.
+
+**Acceptance.**
+- Revert the test-side workaround from #150; test still passes.
+- Add regression test: `SessionStore::from_cwd("/tmp/foo")` and `SessionStore::from_cwd("/private/tmp/foo")` return stores with identical `sessions_dir()` on macOS.
+- Workspace tests green.
+
+**Blocker.** None.
+
+**Source.** Q's ack on #150 surfaced the deeper gap: "#150 closed is real value" but the product function still has the brittleness. Session tally: ROADMAP #151.
+
+## Pinpoint #152. Diagnostic verb suffixes allow arbitrary positional args, emit double "error:" prefix
+
+**Gap.** Verbs like `claw doctor garbage` and `claw status foo bar` parse successfully instead of failing at parse time. The positional arguments fall through to the prompt-execution path, or in some cases the verb parser doesn't have a flag-only guard. Additionally, the error formatter doubles the "error:" prefix and doesn't hint at `--output-format json` for verbs that don't recognize `--json` as an alias.
+
+**Example failures:**
+- `claw doctor garbage` → silently treats "garbage" as a prompt instead of rejecting "doctor" as a verb with unexpected args
+- `claw system-prompt --json` → errors with "error: unknown option" but doesn't suggest `--output-format json`
+- Error messages show `error: error: <message>` (double prefix)
+
+**Fix shape (~30 lines).** Three improvements:
+1. Wire parse_verb_suffix to reject positional args after verbs (except multi-word prompts like "help me debug")
+2. Special-case `--json` in the verb-option error path to suggest `--output-format json`
+3. Remove the "error:" prefix from format_unknown_verb_option (already added by top-level handler)
+
+**Acceptance:** `claw doctor garbage` exits 1 with "unexpected positional argument"; `claw system-prompt --json` hints at `--output-format json`; error messages have single "error:" prefix.
+
+**Blocker.** None. Implementation exists on worktree `jobdori-127-verb-suffix` but needs rebase against main (conflicts with #141 which already shipped).
+
+**Source.** Clawhip nudge 2026-04-21 21:17 KST — "no excuses, always find something to ship" directive. Session tally: ROADMAP #152.
+
+## Pinpoint #153. README/USAGE missing "add binary to PATH" and "verify install" bridge
+
+**Gap.** After `cargo build --workspace`, new users don't know:
+1. Where the binary actually ends up (e.g., `rust/target/debug/claw` vs. expecting it in `/usr/local/bin`)
+2. How to verify the build succeeded (e.g., `claw --help`, `which claw`, `claw doctor`)
+3. How to add it to PATH for shell integration (optional but common follow-up)
+
+This creates a confusing gap: users build successfully but then get "command not found: claw" and assume the build failed, or they immediately ask "how do I install this properly?"
+
+**Real examples from #claw-code:**
+- "claw not found — did the build fail?"
+- "do I need to `cargo install` this?"
+- "why is the binary at `rust/target/debug/claw` and not just `claw`?"
+
+**Fix shape (~50 lines).** Add a new "Post-build verification and PATH" section in README (after Quick start) covering:
+1. **Where the binary lives:** `rust/target/debug/claw` (debug build) or `rust/target/release/claw` (release)
+2. **Verify it works:** Run `./rust/target/debug/claw --help` and `./rust/target/debug/claw doctor`
+3. **Optional: Add to PATH** — three approaches:
+   - symlink: `ln -s $(pwd)/rust/target/debug/claw /usr/local/bin/claw`
+   - `cargo install --path ./rust` (builds and installs to `~/.cargo/bin/`)
+   - update shell profile to export PATH
+4. **Windows equivalent:** Point to `rust\target\debug\claw.exe` and `cargo install --path .\rust`
+
+**Acceptance:** New users can find the binary location, run it directly, and know their first verification step is `claw doctor`.
+
+**Blocker:** None. Pure documentation.
+
+**Source:** Clawhip nudge 2026-04-21 21:27 KST — onboarding gap from #claw-code observations earlier this month.
+
+## Pinpoint #154. Model syntax error doesn't hint at env var when multiple credentials present
+
+**Gap.** When a user types `claw --model gpt-4` but only has `ANTHROPIC_API_KEY` set (no `OPENAI_API_KEY`), the error is:
+```
+error: invalid model syntax: 'gpt-4'. Expected provider/model (e.g., anthropic/claude-opus-4-6) or known alias (opus, sonnet, haiku)
+```
+
+But USAGE.md documents that "The error message now includes a hint that names the detected env var" — **this hint is not actually emitted.** The user gets a generic syntax error and has to re-read USAGE.md to discover they should type `openai/gpt-4` instead.
+
+**Expected behavior (from USAGE.md):** When the user has multiple providers' env vars set, or when a model name looks like it belongs to a different provider (e.g., `gpt-4` looks like OpenAI), the error should hint:
+- "Did you mean `openai/gpt-4`? (but `OPENAI_API_KEY` is not set)"
+- or "You have `ANTHROPIC_API_KEY` set but `gpt-4` looks like an OpenAI model. Try `openai/gpt-4` with `OPENAI_API_KEY` exported"
+
+**Current behavior:** Generic syntax error, user has to infer the fix from USAGE.md or guess.
+
+**Fix shape (~20 lines).** Enhance `FormatError::InvalidModelSyntax` or the model-parsing validation to:
+1. Detect if the model name looks like it belongs to a known provider (prefix `gpt-`, `openai/`, `qwen`, etc.)
+2. If it does, check if that provider's env var is missing
+3. Append a hint: "Did you mean \`{inferred_prefix}/{model}\`? (requires `{PROVIDER_KEY}` env var)"
+
+**Acceptance:** `claw --model gpt-4` produces a hint about OpenAI prefix and missing `OPENAI_API_KEY`. Same for `qwen-plus` → hint about `DASHSCOPE_API_KEY`, etc.
+
+**Blocker:** None. Pure error-message UX improvement.
+
+**Source:** Clawhip nudge 2026-04-21 21:37 KST — discovered during dogfood probing of model validation.
+
+## Pinpoint #155. USAGE.md missing docs for `/ultraplan`, `/teleport`, `/bughunter` commands
+
+**Gap.** The `claw --help` output lists three interactive slash commands that are not documented in USAGE.md:
+- `/ultraplan [task]` — Run a deep planning prompt with multi-step reasoning
+- `/teleport <symbol-or-path>` — Jump to a file or symbol by searching the workspace
+- `/bughunter [scope]` — Inspect the codebase for likely bugs
+
+New users see these commands in the help output but have no explanation of:
+1. What each does
+2. How to use it
+3. What kind of input it expects
+4. When to use it (vs. other commands)
+5. Any limitations or prerequisites
+
+**Impact.** Users run `/ultraplan` or `/teleport` out of curiosity, or they skip these commands because they don't understand them. Documentation should lower the barrier to discovery.
+
+**Fix shape (~100 lines).** Add a new section to USAGE.md after "Interactive slash commands" covering:
+1. **Planning & Reasoning** — `/ultraplan [task]`
+   - Purpose: extended multi-step reasoning over a task
+   - Input: a task description or problem statement
+   - Output: a structured plan with steps and reasoning
+   - Example: `/ultraplan refactor this module to use async/await`
+2. **Navigation** — `/teleport <symbol-or-path>`
+   - Purpose: quickly jump to a file or function by name
+   - Input: a symbol name (function, class, struct) or file path
+   - Output: the file content with that symbol highlighted
+   - Example: `/teleport UserService`, `/teleport src/auth.rs`
+3. **Code Analysis** — `/bughunter [scope]`
+   - Purpose: scan the codebase for likely bugs or issues
+   - Input: optional scope (e.g., "src/handlers", "lib.rs")
+   - Output: list of suspicious patterns with explanations
+   - Example: `/bughunter src`, `/bughunter` (entire workspace)
+
+**Acceptance:** Each command has a one-line description, a practical example, and expected behavior documented.
+
+**Blocker:** None. Pure documentation.
+
+**Source:** Clawhip nudge 2026-04-21 21:47 KST — discovered discrepancy between `claw --help` and USAGE.md coverage.
+
+## Pinpoint #156. Error classification for text-mode output (Phase 2 of #77)
+
+**Gap.** #77 Phase 1 added machine-readable `kind` discriminants to JSON error payloads. Text-mode errors still emit prose-only output with no structured classification.
+
+**Impact.** Observability tools that parse stderr (e.g., log aggregators, CI error parsers) can't distinguish error classes without regex or substring matching. Phase 1 solves it for JSON consumers; Phase 2 should extend the classification to text mode.
+
+**Fix shape (~20 lines).** Option A: Emit a `[error-kind: missing_credentials]` prefix line before the prose error so text parsers can quickly identify the class. Option B: Structured comment format like `# error_class=missing_credentials` at the end. Either way, the `kind` token should appear in text output as well.
+
+**Acceptance.** A stderr observer can distinguish `missing_credentials` from `session_not_found` from `cli_parse` without regex-scraping the full error prose.
+
+**Blocker.** None. Scope is small and non-breaking (adds a prefix or suffix, doesn't change existing error text).
+
+**Source.** Clayhip nudge 2026-04-21 23:18 — dogfood surface clean, Phase 1 proven solid, natural next step is symmetry across output formats.
+
+
+## Pinpoint #157. Structured remediation registry for error hints (Phase 3 of #77 / §4.44)
+
+**Gap.** #77 Phase 1 added machine-readable `kind` discriminants and #156 extended them to text-mode output. However, the `hint` field is still prose derived from splitting the existing error message text — not a stable, registry-backed remediation contract. Downstream claws inspecting the `hint` field still need to parse human wording to decide whether to retry, escalate, or terminate.
+
+**Impact.** A claw receiving `{"kind": "missing_credentials", "hint": "export ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY..."}` cannot programmatically determine the remediation action (e.g., `retry_with_env`, `escalate_to_operator`, `terminate_session`) without regex or substring matching on the hint prose. The `kind` is structured but the `hint` is not — half the error contract is still unstructured.
+
+**Fix shape.**
+
+1. **Remediation registry:** A function `remediation_for(kind: &str, operation: &str) -> Remediation` that maps `(error_kind, operation_context)` pairs to stable remediation structs:
+   ```rust
+   struct Remediation {
+       action: RemediationAction,  // retry, escalate, terminate, configure
+       target: &'static str,       // "env:ANTHROPIC_API_KEY", "config:model", etc.
+       message: &'static str,      // stable human-readable hint
+   }
+   ```
+2. **Stable hint outputs per class:** Each `error_kind` maps to exactly one remediation shape. No more prose splitting.
+3. **Golden fixture tests:** Test each `(kind, operation)` pair against expected remediation output as golden fixtures instead of the current `split_error_hint()` string hacks.
+
+**Acceptance.**
+- `remediation_for("missing_credentials", "prompt")` returns a stable struct with `action: Configure`, `target: "env:ANTHROPIC_API_KEY"`.
+- JSON output includes `remediation.action` and `remediation.target` fields.
+- Golden fixture tests cover all 12+ known error kinds.
+- `split_error_hint()` is replaced or deprecated.
+
+**Blocker.** None. Natural Phase 3 progression from #77 P1 (JSON kind) → #156 (text kind) → #157 (structured remediation).
+
+**Source.** gaebal-gajae dogfood sweep 2026-04-22 05:30 KST — identified that `kind` is structured but `hint` remains prose-derived, leaving downstream claws with half an error contract.
+
+## Pinpoint #158. `compact_messages_if_needed` drops turns silently — no structured compaction event emitted
+
+**Gap.** `QueryEnginePort.compact_messages_if_needed()` (`src/query_engine.py:129`) silently truncates `mutable_messages` and `transcript_store` whenever turn count exceeds `compact_after_turns` (default 12). The truncation is invisible to any consumer — `TurnResult` carries no compaction indicator, the streaming path emits no `compaction_occurred` event, and `persist_session()` persists only the post-compaction slice. A claw polling session state after compaction sees the same `session_id` but a different (shorter) context window with no structured signal that turns were dropped.
+
+**Repro.**
+```python
+import sys; sys.path.insert(0, 'src')
+from query_engine import QueryEnginePort, QueryEngineConfig
+
+engine = QueryEnginePort.from_workspace()
+engine.config = QueryEngineConfig(compact_after_turns=3)
+for i in range(5):
+    r = engine.submit_message(f'turn {i}')
+    # TurnResult has no compaction field
+    assert not hasattr(r, 'compaction_occurred')  # passes every time
+print(len(engine.mutable_messages))  # 3 — silently truncated from 5
+```
+
+**Root cause.** `compact_messages_if_needed` is called inside `submit_message` with no return value and no side-channel notification. `stream_submit_message` yields a `message_stop` event that includes `transcript_size` but not a `compaction_occurred` flag or `turns_dropped` count.
+
+**Fix shape (~15 lines).**
+1. Add `compaction_occurred: bool` and `turns_dropped: int` to `TurnResult`.
+2. In `compact_messages_if_needed`, return `(bool, int)` — whether compaction ran and how many turns were dropped.
+3. Propagate into `TurnResult` in `submit_message`.
+4. In `stream_submit_message`, include `compaction_occurred` and `turns_dropped` in the `message_stop` event.
+
+**Acceptance.** A claw watching the stream can detect that compaction occurred and how many turns were silently dropped, without polling `transcript_size` across two consecutive turns.
+
+**Blocker.** None.
+
+**Source.** Jobdori dogfood sweep 2026-04-22 06:36 KST — probed `query_engine.py` compact path, confirmed no structured compaction signal in `TurnResult` or stream output.
+
+## Pinpoint #159. `run_turn_loop` hardcodes empty denied_tools — permission denials silently absent from multi-turn sessions
+
+**Gap.** `PortRuntime.run_turn_loop` (`src/runtime.py:163`) calls `engine.submit_message(turn_prompt, command_names, tool_names, ())` with a hardcoded empty tuple for `denied_tools`. By contrast, `bootstrap_session` calls `_infer_permission_denials(matches)` and passes the result. Result: any tool that would be denied (e.g., bash-family tools gated as "destructive") silently appears unblocked across all turns in `turn-loop` mode. The `TurnResult.permission_denials` tuple is always empty for multi-turn runs, giving a false "clean" permission picture to any claw consuming those results.
+
+**Repro.**
+```python
+import sys; sys.path.insert(0, 'src')
+from runtime import PortRuntime
+results = PortRuntime().run_turn_loop('run bash ls', max_turns=2)
+for r in results:
+    assert r.permission_denials == ()  # passes — denials never surfaced
+```
+
+Compare `bootstrap_session` for the same prompt — it produces a `PermissionDenial` for bash-family tools.
+
+**Root cause.** `src/runtime.py:163` — `engine.submit_message(turn_prompt, command_names, tool_names, ())`. The `()` is a hardcoded literal; `_infer_permission_denials` is never called in the turn-loop path.
+
+**Fix shape (~5 lines).** Before the turn loop, compute:
+```python
+denials = tuple(self._infer_permission_denials(matches))
+```
+Then pass `denied_tools=denials` to every `submit_message` call inside the loop. Mirrors the existing pattern in `bootstrap_session`.
+
+**Acceptance.** `run_turn_loop('run bash ls').permission_denials` is non-empty and matches what `bootstrap_session` returns for the same prompt. Multi-turn session security posture is symmetric with single-turn bootstrap.
+
+**Blocker.** None.
+
+**Source.** Jobdori dogfood sweep 2026-04-22 06:46 KST — diffed `bootstrap_session` vs `run_turn_loop` in `src/runtime.py`, confirmed asymmetric permission denial propagation.
+
+## Pinpoint #160. `session_store` has no `list_sessions`, `delete_session`, or `session_exists` — claw cannot enumerate or clean up sessions without filesystem hacks
+
+**Gap.** `src/session_store.py` exposes exactly two public functions: `save_session` and `load_session`. There is no `list_sessions`, `delete_session`, or `session_exists`. Any claw that needs to enumerate stored sessions, verify a session exists before loading (to avoid `FileNotFoundError`), or clean up stale sessions must reach past the module and glob `DEFAULT_SESSION_DIR` directly. This couples callers to the on-disk layout (`<dir>/<session_id>.json`) and makes it impossible to swap storage backends (e.g., sqlite, remote store) without touching every call site.
+
+**Repro.**
+```python
+import sys; sys.path.insert(0, 'src')
+import session_store, inspect
+print([n for n, _ in inspect.getmembers(session_store, inspect.isfunction)
+       if not n.startswith('_')])
+# ['asdict', 'dataclass', 'load_session', 'save_session']
+# list_sessions, delete_session, session_exists — all absent
+```
+
+Try to enumerate sessions without the module:
+```python
+from pathlib import Path
+sessions = list((Path('.port_sessions')).glob('*.json'))
+# Works today, breaks if the dir layout ever changes — no abstraction layer
+```
+
+Try to load a session that doesn't exist:
+```python
+load_session('nonexistent')  # raises FileNotFoundError with no structured error type
+```
+
+**Root cause.** `src/session_store.py` was scaffolded with the minimum needed to save/load a single session and was never extended with the CRUD surface a claw actually needs to manage session lifecycle.
+
+**Fix shape (~25 lines).**
+1. `list_sessions(directory: Path | None = None) -> list[str]` — glob `*.json` in target dir, return sorted session ids (filename stems). Claws can call this to discover all stored sessions without touching the filesystem directly.
+2. `session_exists(session_id: str, directory: Path | None = None) -> bool` — `(target_dir / f'{session_id}.json').exists()`. Use before `load_session` to get a bool check instead of catching `FileNotFoundError`.
+3. `delete_session(session_id: str, directory: Path | None = None) -> bool` — unlink the file if present, return True on success, False if not found. Claws can use this for cleanup without knowing the path scheme.
+
+**Acceptance.** A claw can call `list_sessions()`, `session_exists(id)`, and `delete_session(id)` without importing `Path` or knowing the `.port_sessions/<id>.json` layout. `load_session` on a missing id raises a typed `SessionNotFoundError` subclass of `KeyError` (not `FileNotFoundError`) so callers can distinguish "not found" from IO errors.
+
+**Blocker.** None.
+
+**Source.** Jobdori dogfood sweep 2026-04-22 08:46 KST — inspected `src/session_store.py` public API, confirmed only `save_session` + `load_session` present, no list/delete/exists surface.
