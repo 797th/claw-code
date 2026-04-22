@@ -8,6 +8,7 @@
 )]
 mod init;
 mod input;
+mod mao;
 mod render;
 
 use std::collections::BTreeSet;
@@ -489,6 +490,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             reasoning_effort,
             allow_broad_cwd,
         )?,
+        CliAction::Orchestrate {
+            prompt,
+            manager_model,
+            worker_model,
+            output_format,
+        } => {
+            match mao::run_orchestrate(&manager_model, &worker_model, &prompt) {
+                Ok(result) => match output_format {
+                    CliOutputFormat::Json => println!("{}", result.render_json()),
+                    CliOutputFormat::Text => println!("{}", result.render_text()),
+                },
+                Err(e) => {
+                    eprintln!("orchestration error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         CliAction::HelpTopic(topic) => print_help_topic(topic),
         CliAction::Help { output_format } => print_help(output_format)?,
     }
@@ -590,6 +608,15 @@ enum CliAction {
         base_commit: Option<String>,
         reasoning_effort: Option<String>,
         allow_broad_cwd: bool,
+    },
+    /// MAO Phase 1: decompose prompt → spawn specialized subagents → aggregate results.
+    Orchestrate {
+        prompt: String,
+        /// High-reasoning model for the ManagerAgent decomposition step.
+        manager_model: String,
+        /// Model used by spawned Subagents (may equal manager_model).
+        worker_model: String,
+        output_format: CliOutputFormat,
     },
     HelpTopic(LocalHelpTopic),
     // prompt-mode formatting is only supported for non-interactive runs
@@ -977,6 +1004,36 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
         "login" | "logout" => Err(removed_auth_surface_error(rest[0].as_str())),
         "init" => Ok(CliAction::Init { output_format }),
         "export" => parse_export_args(&rest[1..], output_format),
+        "orchestrate" => {
+            // Usage: claw orchestrate [--worker-model <model>] <prompt…>
+            // Manager always uses the resolved `model` (default: gpt-oss-120b).
+            // Worker defaults to the same model but can be overridden.
+            let mut worker_model = model.clone();
+            let mut prompt_parts: Vec<&str> = Vec::new();
+            let args = &rest[1..];
+            let mut i = 0;
+            while i < args.len() {
+                if (args[i] == "--worker-model" || args[i] == "--worker") && i + 1 < args.len() {
+                    worker_model = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    prompt_parts.push(args[i].as_str());
+                    i += 1;
+                }
+            }
+            let prompt = prompt_parts.join(" ");
+            if prompt.trim().is_empty() {
+                return Err(
+                    "orchestrate requires a prompt. Usage: claw orchestrate <prompt>".to_string(),
+                );
+            }
+            Ok(CliAction::Orchestrate {
+                prompt,
+                manager_model: model,
+                worker_model,
+                output_format,
+            })
+        }
         "prompt" => {
             let prompt = rest[1..].join(" ");
             if prompt.trim().is_empty() {
@@ -1363,6 +1420,7 @@ fn suggest_similar_subcommand(input: &str) -> Option<Vec<String>> {
         "acp",
         "init",
         "export",
+        "orchestrate",
         "prompt",
     ];
 
