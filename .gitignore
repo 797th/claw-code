@@ -13,3 +13,4 @@ rust/.claw/
 .clawhip/
 status-help.txt
 tmp-cliclaw-bin/
+.env

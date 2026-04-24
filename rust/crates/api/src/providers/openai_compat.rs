@@ -19,6 +19,7 @@ use super::{preflight_message_request, Provider, ProviderFuture};
 pub const DEFAULT_XAI_BASE_URL: &str = "https://api.x.ai/v1";
 pub const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 pub const DEFAULT_DASHSCOPE_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+pub const DEFAULT_NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 const REQUEST_ID_HEADER: &str = "request-id";
 const ALT_REQUEST_ID_HEADER: &str = "x-request-id";
 const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
@@ -41,11 +42,13 @@ pub struct OpenAiCompatConfig {
 const XAI_ENV_VARS: &[&str] = &["XAI_API_KEY"];
 const OPENAI_ENV_VARS: &[&str] = &["OPENAI_API_KEY"];
 const DASHSCOPE_ENV_VARS: &[&str] = &["DASHSCOPE_API_KEY"];
+const NVIDIA_NIM_ENV_VARS: &[&str] = &["NVIDIA_API_KEY"];
 
 // Provider-specific request body size limits in bytes
 const XAI_MAX_REQUEST_BODY_BYTES: usize = 52_428_800; // 50MB
 const OPENAI_MAX_REQUEST_BODY_BYTES: usize = 104_857_600; // 100MB
 const DASHSCOPE_MAX_REQUEST_BODY_BYTES: usize = 6_291_456; // 6MB (observed limit in dogfood)
+const NVIDIA_NIM_MAX_REQUEST_BODY_BYTES: usize = 52_428_800; // 50MB
 
 impl OpenAiCompatConfig {
     #[must_use]
@@ -85,12 +88,27 @@ impl OpenAiCompatConfig {
         }
     }
 
+    /// NVIDIA NIM OpenAI-compatible endpoint.
+    /// Models: `openai/gpt-oss-20b` (medium), `openai/gpt-oss-120b` (heavy).
+    /// Env: `NVIDIA_API_KEY`, `NVIDIA_BASE_URL` (optional override).
+    #[must_use]
+    pub const fn nvidia_nim() -> Self {
+        Self {
+            provider_name: "NVIDIA NIM",
+            api_key_env: "NVIDIA_API_KEY",
+            base_url_env: "NVIDIA_BASE_URL",
+            default_base_url: DEFAULT_NVIDIA_NIM_BASE_URL,
+            max_request_body_bytes: NVIDIA_NIM_MAX_REQUEST_BODY_BYTES,
+        }
+    }
+
     #[must_use]
     pub fn credential_env_vars(self) -> &'static [&'static str] {
         match self.provider_name {
             "xAI" => XAI_ENV_VARS,
             "OpenAI" => OPENAI_ENV_VARS,
             "DashScope" => DASHSCOPE_ENV_VARS,
+            "NVIDIA NIM" => NVIDIA_NIM_ENV_VARS,
             _ => &[],
         }
     }
@@ -307,7 +325,6 @@ impl OpenAiCompatClient {
 /// the system clock resolution is coarser than consecutive retry sleeps.
 static JITTER_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Returns a random additive jitter in `[0, base]` to decorrelate retries
 /// Deserialize a JSON field as a `Vec<T>`, treating an explicit `null` value
 /// the same as a missing field (i.e. as an empty vector).
 /// Some OpenAI-compatible providers emit `"tool_calls": null` instead of
@@ -321,6 +338,7 @@ where
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+/// Returns a random additive jitter in `[0, base]` to decorrelate retries
 /// from multiple concurrent clients. Entropy is drawn from the nanosecond
 /// wall clock mixed with a monotonic counter and run through a splitmix64
 /// finalizer; adequate for retry jitter (no cryptographic requirement).
@@ -802,6 +820,10 @@ pub fn is_reasoning_model(model: &str) -> bool {
 /// bare model id.
 fn should_preserve_routing_prefix(model: &str, config: OpenAiCompatConfig, base_url: &str) -> bool {
     let normalized_base_url = base_url.trim_end_matches('/');
+    if config.provider_name == "NVIDIA NIM" && model.starts_with("openai/gpt-oss") {
+        return true;
+    }
+
     config.provider_name == "OpenAI"
         && normalized_base_url != DEFAULT_OPENAI_BASE_URL
         && model.starts_with("openai/")
@@ -1656,6 +1678,21 @@ mod tests {
             },
             OpenAiCompatConfig::openai(),
             "https://integrate.api.nvidia.com/v1",
+        );
+        assert_eq!(payload["model"], json!("openai/gpt-oss-120b"));
+    }
+
+    #[test]
+    fn nvidia_nim_preserves_gpt_oss_namespaced_model_ids() {
+        let payload = build_chat_completion_request_for_base_url(
+            &MessageRequest {
+                model: "openai/gpt-oss-120b".to_string(),
+                max_tokens: 64,
+                messages: vec![InputMessage::user_text("hello")],
+                ..Default::default()
+            },
+            OpenAiCompatConfig::nvidia_nim(),
+            super::DEFAULT_NVIDIA_NIM_BASE_URL,
         );
         assert_eq!(payload["model"], json!("openai/gpt-oss-120b"));
     }

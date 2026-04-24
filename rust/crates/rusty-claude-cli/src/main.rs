@@ -1751,6 +1751,7 @@ fn provider_label(kind: ProviderKind) -> &'static str {
         ProviderKind::Anthropic => "anthropic",
         ProviderKind::Xai => "xai",
         ProviderKind::OpenAi => "openai",
+        ProviderKind::NvidiaNim => "nvidia-nim",
     }
 }
 
@@ -7621,17 +7622,16 @@ impl AnthropicRuntimeClient {
                     .with_prompt_cache(PromptCache::new(session_id));
                 ApiProviderClient::Anthropic(inner)
             }
-            ProviderKind::Xai | ProviderKind::OpenAi => {
+            ProviderKind::Xai | ProviderKind::OpenAi | ProviderKind::NvidiaNim => {
                 // The api crate's `ProviderClient::from_model_with_anthropic_auth`
                 // with `None` for the anthropic auth routes via
                 // `detect_provider_kind` and builds an
                 // `OpenAiCompatClient::from_env` with the matching
-                // `OpenAiCompatConfig` (openai / xai / dashscope).
+                // `OpenAiCompatConfig` (openai / xai / dashscope / nvidia_nim).
                 // That reads the correct API-key env var and BASE_URL
                 // override internally, so this one call covers OpenAI,
-                // OpenRouter, xAI, DashScope, Ollama, and any other
-                // OpenAI-compat endpoint users configure via
-                // `OPENAI_BASE_URL` / `XAI_BASE_URL` / `DASHSCOPE_BASE_URL`.
+                // OpenRouter, xAI, DashScope, NVIDIA NIM, Ollama, and any
+                // other OpenAI-compat endpoint users configure via env vars.
                 ApiProviderClient::from_model_with_anthropic_auth(&resolved_model, None)?
             }
         };

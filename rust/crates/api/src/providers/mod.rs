@@ -33,6 +33,7 @@ pub enum ProviderKind {
     Anthropic,
     Xai,
     OpenAi,
+    NvidiaNim,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,37 +126,37 @@ const MODEL_REGISTRY: &[(&str, ProviderMetadata)] = &[
     (
         "gpt-oss",
         ProviderMetadata {
-            provider: ProviderKind::OpenAi,
-            auth_env: "OPENAI_API_KEY",
-            base_url_env: "OPENAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
+            provider: ProviderKind::NvidiaNim,
+            auth_env: "NVIDIA_API_KEY",
+            base_url_env: "NVIDIA_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_NVIDIA_NIM_BASE_URL,
         },
     ),
     (
         "gptoss",
         ProviderMetadata {
-            provider: ProviderKind::OpenAi,
-            auth_env: "OPENAI_API_KEY",
-            base_url_env: "OPENAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
+            provider: ProviderKind::NvidiaNim,
+            auth_env: "NVIDIA_API_KEY",
+            base_url_env: "NVIDIA_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_NVIDIA_NIM_BASE_URL,
         },
     ),
     (
         "gpt-oss-120b",
         ProviderMetadata {
-            provider: ProviderKind::OpenAi,
-            auth_env: "OPENAI_API_KEY",
-            base_url_env: "OPENAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
+            provider: ProviderKind::NvidiaNim,
+            auth_env: "NVIDIA_API_KEY",
+            base_url_env: "NVIDIA_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_NVIDIA_NIM_BASE_URL,
         },
     ),
     (
         "gpt-oss-20b",
         ProviderMetadata {
-            provider: ProviderKind::OpenAi,
-            auth_env: "OPENAI_API_KEY",
-            base_url_env: "OPENAI_BASE_URL",
-            default_base_url: openai_compat::DEFAULT_OPENAI_BASE_URL,
+            provider: ProviderKind::NvidiaNim,
+            auth_env: "NVIDIA_API_KEY",
+            base_url_env: "NVIDIA_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_NVIDIA_NIM_BASE_URL,
         },
     ),
     (
@@ -190,9 +191,12 @@ pub fn resolve_model_alias(model: &str) -> String {
                     _ => trimmed,
                 },
                 ProviderKind::OpenAi => match *alias {
+                    "kimi" => "kimi-k2.5",
+                    _ => trimmed,
+                },
+                ProviderKind::NvidiaNim => match *alias {
                     "gpt-oss" | "gptoss" | "gpt-oss-120b" => "openai/gpt-oss-120b",
                     "gpt-oss-20b" => "openai/gpt-oss-20b",
-                    "kimi" => "kimi-k2.5",
                     _ => trimmed,
                 },
             })
@@ -219,14 +223,22 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
             default_base_url: openai_compat::DEFAULT_XAI_BASE_URL,
         });
     }
+    // NVIDIA NIM models are namespaced as "openai/gpt-oss-*" and served via
+    // the NVIDIA NIM OpenAI-compatible endpoint. Route them before the generic
+    // openai/ prefix check so they always hit the NVIDIA NIM config.
+    if canonical.starts_with("openai/gpt-oss") || canonical.starts_with("gpt-oss") || canonical.starts_with("gptoss") {
+        return Some(ProviderMetadata {
+            provider: ProviderKind::NvidiaNim,
+            auth_env: "NVIDIA_API_KEY",
+            base_url_env: "NVIDIA_BASE_URL",
+            default_base_url: openai_compat::DEFAULT_NVIDIA_NIM_BASE_URL,
+        });
+    }
     // Explicit provider-namespaced models (e.g. "openai/gpt-4.1-mini") must
     // route to the correct provider regardless of which auth env vars are set.
     // Without this, detect_provider_kind falls through to the auth-sniffer
     // order and misroutes to Anthropic if ANTHROPIC_API_KEY is present.
-    if canonical.starts_with("openai/")
-        || canonical.starts_with("gpt-")
-        || canonical.starts_with("gptoss")
-    {
+    if canonical.starts_with("openai/") || canonical.starts_with("gpt-") {
         return Some(ProviderMetadata {
             provider: ProviderKind::OpenAi,
             auth_env: "OPENAI_API_KEY",
@@ -282,6 +294,9 @@ pub fn detect_provider_kind(model: &str) -> ProviderKind {
     }
     if openai_compat::has_api_key("XAI_API_KEY") {
         return ProviderKind::Xai;
+    }
+    if openai_compat::has_api_key("NVIDIA_API_KEY") {
+        return ProviderKind::NvidiaNim;
     }
     // Last resort: if OPENAI_BASE_URL is set without OPENAI_API_KEY (some
     // local providers like Ollama don't require auth), still route there.
@@ -489,13 +504,32 @@ pub(crate) fn load_dotenv_file(
     Some(parse_dotenv(&content))
 }
 
-/// Look up `key` in a `.env` file located in the current working directory.
-/// Returns `None` when the file is missing, the key is absent, or the value
-/// is empty.
+/// Look up `key` in a `.env` file.
+///
+/// Search order:
+/// 1. `.env` in the current working directory (project-local override)
+/// 2. `$CLAW_CONFIG_HOME/.env` or `~/.claw/.env` (user-global credentials)
+///
+/// Returns `None` when the key is absent in both files or its value is empty.
 pub(crate) fn dotenv_value(key: &str) -> Option<String> {
-    let cwd = std::env::current_dir().ok()?;
-    let values = load_dotenv_file(&cwd.join(".env"))?;
-    values.get(key).filter(|value| !value.is_empty()).cloned()
+    // 1. Project-local .env (current working directory)
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(values) = load_dotenv_file(&cwd.join(".env")) {
+            if let Some(val) = values.get(key).filter(|v| !v.is_empty()) {
+                return Some(val.clone());
+            }
+        }
+    }
+    // 2. User-global ~/.claw/.env (or $CLAW_CONFIG_HOME/.env)
+    let config_home = std::env::var_os("CLAW_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(|h| std::path::PathBuf::from(h).join(".claw"))
+        })?;
+    let values = load_dotenv_file(&config_home.join(".env"))?;
+    values.get(key).filter(|v| !v.is_empty()).cloned()
 }
 
 #[cfg(test)]
@@ -602,9 +636,10 @@ mod tests {
             .map_or_else(|| detect_provider_kind("gpt-4o"), |m| m.provider);
         assert_eq!(kind2, ProviderKind::OpenAi);
 
+        // gpt-oss-* routes to NVIDIA NIM, not generic OpenAI.
         let kind3 = super::metadata_for_model("gpt-oss-120b")
             .map_or_else(|| detect_provider_kind("gpt-oss-120b"), |m| m.provider);
-        assert_eq!(kind3, ProviderKind::OpenAi);
+        assert_eq!(kind3, ProviderKind::NvidiaNim);
     }
 
     #[test]
