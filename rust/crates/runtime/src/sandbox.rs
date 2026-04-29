@@ -107,13 +107,22 @@ impl SandboxConfig {
 
 #[must_use]
 pub fn detect_container_environment() -> ContainerEnvironment {
-    let proc_1_cgroup = fs::read_to_string("/proc/1/cgroup").ok();
-    detect_container_environment_from(SandboxDetectionInputs {
-        env_pairs: env::vars().collect(),
-        dockerenv_exists: Path::new("/.dockerenv").exists(),
-        containerenv_exists: Path::new("/run/.containerenv").exists(),
-        proc_1_cgroup: proc_1_cgroup.as_deref(),
-    })
+    // Cache the result for the process lifetime — the container environment
+    // does not change at runtime and this function is called on every bash
+    // tool invocation.
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<ContainerEnvironment> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            let proc_1_cgroup = fs::read_to_string("/proc/1/cgroup").ok();
+            detect_container_environment_from(SandboxDetectionInputs {
+                env_pairs: env::vars().collect(),
+                dockerenv_exists: Path::new("/.dockerenv").exists(),
+                containerenv_exists: Path::new("/run/.containerenv").exists(),
+                proc_1_cgroup: proc_1_cgroup.as_deref(),
+            })
+        })
+        .clone()
 }
 
 #[must_use]

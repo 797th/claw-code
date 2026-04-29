@@ -657,6 +657,8 @@ pub fn resolve_startup_auth_source<F>(load_oauth_config: F) -> Result<AuthSource
 where
     F: FnOnce() -> Result<Option<OAuthConfig>, ApiError>,
 {
+    // load_oauth_config is a reserved hook for future OAuth startup resolution.
+    // Currently unused: startup auth is resolved from environment variables only.
     let _ = load_oauth_config;
     if let Some(api_key) = read_env_non_empty("ANTHROPIC_API_KEY")? {
         return match read_env_non_empty("ANTHROPIC_AUTH_TOKEN")? {
@@ -716,9 +718,16 @@ fn client_runtime_block_on<F, T>(future: F) -> Result<T, ApiError>
 where
     F: std::future::Future<Output = Result<T, ApiError>>,
 {
-    tokio::runtime::Runtime::new()
-        .map_err(ApiError::from)?
-        .block_on(future)
+    // If we're already inside a Tokio runtime (the common async path), use
+    // block_in_place so we don't panic with "Cannot start a runtime from
+    // within a runtime". Fall back to creating a fresh runtime when called
+    // from a purely synchronous context.
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(future)),
+        Err(_) => tokio::runtime::Runtime::new()
+            .map_err(ApiError::from)?
+            .block_on(future),
+    }
 }
 
 fn load_saved_oauth_token() -> Result<Option<OAuthTokenSet>, ApiError> {

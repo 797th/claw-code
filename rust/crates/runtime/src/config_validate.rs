@@ -197,6 +197,18 @@ const TOP_LEVEL_FIELDS: &[FieldSpec] = &[
         name: "trustedRoots",
         expected: FieldType::StringArray,
     },
+    FieldSpec {
+        name: "autoMemoryEnabled",
+        expected: FieldType::Bool,
+    },
+    FieldSpec {
+        name: "autoMemoryDirectory",
+        expected: FieldType::String,
+    },
+    FieldSpec {
+        name: "autoDreamEnabled",
+        expected: FieldType::Bool,
+    },
 ];
 
 const HOOKS_FIELDS: &[FieldSpec] = &[

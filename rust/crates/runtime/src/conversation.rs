@@ -697,10 +697,19 @@ pub fn auto_compaction_threshold_from_env() -> u32 {
 
 #[must_use]
 fn parse_auto_compaction_threshold(value: Option<&str>) -> u32 {
-    value
-        .and_then(|raw| raw.trim().parse::<u32>().ok())
-        .filter(|threshold| *threshold > 0)
-        .unwrap_or(DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD)
+    let Some(raw) = value else {
+        return DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD;
+    };
+    match raw.trim().parse::<u32>() {
+        Ok(0) => {
+            // Explicit zero means "disable auto-compaction". Use u32::MAX so
+            // the input-token check never triggers rather than silently falling
+            // back to the default 100k threshold.
+            u32::MAX
+        }
+        Ok(n) => n,
+        Err(_) => DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD,
+    }
 }
 
 fn build_assistant_message(
@@ -1601,10 +1610,9 @@ mod tests {
             DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD
         );
         assert_eq!(parse_auto_compaction_threshold(Some("4321")), 4321);
-        assert_eq!(
-            parse_auto_compaction_threshold(Some("0")),
-            DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD
-        );
+        // 0 means "disable auto-compaction" — maps to u32::MAX so the token
+        // check never fires, rather than silently using the default threshold.
+        assert_eq!(parse_auto_compaction_threshold(Some("0")), u32::MAX);
         assert_eq!(
             parse_auto_compaction_threshold(Some("not-a-number")),
             DEFAULT_AUTO_COMPACTION_INPUT_TOKENS_THRESHOLD

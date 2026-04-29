@@ -350,24 +350,42 @@ pub fn is_terminal_event(event: LaneEventName) -> bool {
 }
 
 /// Compute a fingerprint for terminal event deduplication.
+///
+/// Uses FNV-1a (stable, not subject to Rust's `DefaultHasher` randomisation
+/// across releases) and `serde_json` serialisation (stable, not `Debug` which
+/// can change when fields are added) as the hash input.
 #[must_use]
 pub fn compute_event_fingerprint(
     event: &LaneEventName,
     status: &LaneEventStatus,
     data: Option<&serde_json::Value>,
 ) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-    let mut hasher = DefaultHasher::new();
-    format!("{event:?}").hash(&mut hasher);
-    format!("{status:?}").hash(&mut hasher);
+    let mut hash = FNV_OFFSET;
+    let mut feed = |bytes: &[u8]| {
+        for &b in bytes {
+            hash ^= u64::from(b);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        // Separator byte so adjacent fields don't collide.
+        hash ^= 0xFF;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    };
+
+    // Use serde_json as a stable serialisation format rather than Debug,
+    // which is not guaranteed to be stable across struct changes.
+    let event_str = serde_json::to_string(event).unwrap_or_default();
+    let status_str = serde_json::to_string(status).unwrap_or_default();
+    feed(event_str.as_bytes());
+    feed(status_str.as_bytes());
     if let Some(d) = data {
-        serde_json::to_string(d)
-            .unwrap_or_default()
-            .hash(&mut hasher);
+        let data_str = serde_json::to_string(d).unwrap_or_default();
+        feed(data_str.as_bytes());
     }
-    format!("{:016x}", hasher.finish())
+
+    format!("{hash:016x}")
 }
 
 /// Deduplicate terminal events within a reconciliation window.

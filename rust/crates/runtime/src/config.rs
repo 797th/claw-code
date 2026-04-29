@@ -56,6 +56,7 @@ pub struct RuntimePluginConfig {
 pub struct RuntimeFeatureConfig {
     hooks: RuntimeHookConfig,
     plugins: RuntimePluginConfig,
+    memory: MemoryConfig,
     mcp: McpConfigCollection,
     oauth: Option<OAuthConfig>,
     model: Option<String>,
@@ -90,6 +91,14 @@ pub struct RuntimePermissionRuleConfig {
     allow: Vec<String>,
     deny: Vec<String>,
     ask: Vec<String>,
+}
+
+/// Runtime memory settings shared by CLI and future entrypoints.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MemoryConfig {
+    auto_memory_enabled: bool,
+    auto_memory_directory: Option<String>,
+    auto_dream_enabled: bool,
 }
 
 /// Collection of configured MCP servers after scope-aware merging.
@@ -304,6 +313,7 @@ impl ConfigLoader {
         let feature_config = RuntimeFeatureConfig {
             hooks: parse_optional_hooks_config(&merged_value)?,
             plugins: parse_optional_plugin_config(&merged_value)?,
+            memory: parse_optional_memory_config(&merged_value)?,
             mcp: McpConfigCollection {
                 servers: mcp_servers,
             },
@@ -376,6 +386,11 @@ impl RuntimeConfig {
     }
 
     #[must_use]
+    pub fn memory(&self) -> &MemoryConfig {
+        &self.feature_config.memory
+    }
+
+    #[must_use]
     pub fn oauth(&self) -> Option<&OAuthConfig> {
         self.feature_config.oauth.as_ref()
     }
@@ -430,6 +445,12 @@ impl RuntimeFeatureConfig {
     }
 
     #[must_use]
+    pub fn with_memory(mut self, memory: MemoryConfig) -> Self {
+        self.memory = memory;
+        self
+    }
+
+    #[must_use]
     pub fn hooks(&self) -> &RuntimeHookConfig {
         &self.hooks
     }
@@ -437,6 +458,11 @@ impl RuntimeFeatureConfig {
     #[must_use]
     pub fn plugins(&self) -> &RuntimePluginConfig {
         &self.plugins
+    }
+
+    #[must_use]
+    pub fn memory(&self) -> &MemoryConfig {
+        &self.memory
     }
 
     #[must_use]
@@ -629,6 +655,36 @@ impl RuntimePermissionRuleConfig {
     #[must_use]
     pub fn ask(&self) -> &[String] {
         &self.ask
+    }
+}
+
+impl MemoryConfig {
+    #[must_use]
+    pub fn new(
+        auto_memory_enabled: bool,
+        auto_memory_directory: Option<String>,
+        auto_dream_enabled: bool,
+    ) -> Self {
+        Self {
+            auto_memory_enabled,
+            auto_memory_directory,
+            auto_dream_enabled,
+        }
+    }
+
+    #[must_use]
+    pub fn auto_memory_enabled(&self) -> bool {
+        self.auto_memory_enabled
+    }
+
+    #[must_use]
+    pub fn auto_memory_directory(&self) -> Option<&str> {
+        self.auto_memory_directory.as_deref()
+    }
+
+    #[must_use]
+    pub fn auto_dream_enabled(&self) -> bool {
+        self.auto_dream_enabled
     }
 }
 
@@ -826,6 +882,17 @@ fn parse_optional_plugin_config(root: &JsonValue) -> Result<RuntimePluginConfig,
         optional_string(plugins, "bundledRoot", "merged settings.plugins")?.map(str::to_string);
     config.max_output_tokens = optional_u32(plugins, "maxOutputTokens", "merged settings.plugins")?;
     Ok(config)
+}
+
+fn parse_optional_memory_config(root: &JsonValue) -> Result<MemoryConfig, ConfigError> {
+    let Some(object) = root.as_object() else {
+        return Ok(MemoryConfig::default());
+    };
+    Ok(MemoryConfig::new(
+        optional_bool(object, "autoMemoryEnabled", "merged settings")?.unwrap_or(false),
+        optional_string(object, "autoMemoryDirectory", "merged settings")?.map(str::to_string),
+        optional_bool(object, "autoDreamEnabled", "merged settings")?.unwrap_or(false),
+    ))
 }
 
 fn parse_optional_permission_mode(
@@ -1472,6 +1539,37 @@ mod tests {
         assert_eq!(chain.primary(), None);
         assert!(chain.fallbacks().is_empty());
         assert!(chain.is_empty());
+
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn parses_memory_config_from_settings() {
+        let root = temp_dir();
+        let cwd = root.join("project");
+        let home = root.join("home").join(".claw");
+        fs::create_dir_all(&home).expect("home config dir");
+        fs::create_dir_all(&cwd).expect("project dir");
+        fs::write(
+            home.join("settings.json"),
+            r#"{
+              "autoMemoryEnabled": true,
+              "autoMemoryDirectory": ".claw/custom-memory",
+              "autoDreamEnabled": true
+            }"#,
+        )
+        .expect("write memory settings");
+
+        let loaded = ConfigLoader::new(&cwd, &home)
+            .load()
+            .expect("config should load");
+
+        assert!(loaded.memory().auto_memory_enabled());
+        assert_eq!(
+            loaded.memory().auto_memory_directory(),
+            Some(".claw/custom-memory")
+        );
+        assert!(loaded.memory().auto_dream_enabled());
 
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }

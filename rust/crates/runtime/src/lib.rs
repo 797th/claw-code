@@ -12,6 +12,7 @@ mod compact;
 mod config;
 pub mod config_validate;
 mod conversation;
+pub mod dreamer;
 mod file_ops;
 mod git_context;
 pub mod green_contract;
@@ -46,6 +47,7 @@ pub mod task_registry;
 pub mod team_cron_registry;
 #[cfg(test)]
 mod trust_resolver;
+mod turn_service;
 mod usage;
 pub mod worker_boot;
 
@@ -59,10 +61,10 @@ pub use compact::{
 pub use config::{
     ConfigEntry, ConfigError, ConfigLoader, ConfigSource, McpConfigCollection,
     McpManagedProxyServerConfig, McpOAuthConfig, McpRemoteServerConfig, McpSdkServerConfig,
-    McpServerConfig, McpStdioServerConfig, McpTransport, McpWebSocketServerConfig, OAuthConfig,
-    ProviderFallbackConfig, ResolvedPermissionMode, RuntimeConfig, RuntimeFeatureConfig,
-    RuntimeHookConfig, RuntimePermissionRuleConfig, RuntimePluginConfig, ScopedMcpServerConfig,
-    CLAW_SETTINGS_SCHEMA_NAME,
+    McpServerConfig, McpStdioServerConfig, McpTransport, McpWebSocketServerConfig, MemoryConfig,
+    OAuthConfig, ProviderFallbackConfig, ResolvedPermissionMode, RuntimeConfig,
+    RuntimeFeatureConfig, RuntimeHookConfig, RuntimePermissionRuleConfig, RuntimePluginConfig,
+    ScopedMcpServerConfig, CLAW_SETTINGS_SCHEMA_NAME,
 };
 pub use config_validate::{
     check_unsupported_format, format_diagnostics, validate_config_file, ConfigDiagnostic,
@@ -72,6 +74,13 @@ pub use conversation::{
     auto_compaction_threshold_from_env, ApiClient, ApiRequest, AssistantEvent, AutoCompactionEvent,
     ConversationRuntime, PromptCacheEvent, RuntimeError, StaticToolExecutor, ToolError,
     ToolExecutor, TurnSummary,
+};
+pub use dreamer::{
+    append_daily_log, auto_dream_gate, collect_memory_logs, consolidate_memory, load_memory_prompt,
+    maybe_run_auto_dream, resolve_memory_dir, run_dreamer_pass, write_consolidated_memory,
+    DreamGate, DreamRun, DreamerConfig, DreamerError, DreamerFileOutput, DreamerOutput, MemoryLog,
+    MemoryManager, CONSOLIDATED_MEMORY_FILENAME, DREAM_LOCK_FILENAME, LAST_DREAM_FILENAME,
+    MEMORY_FILENAME,
 };
 pub use file_ops::{
     edit_file, glob_search, grep_search, read_file, write_file, EditFileOutput, GlobSearchOutput,
@@ -165,6 +174,7 @@ pub use stale_branch::{
 pub use task_packet::{validate_packet, TaskPacket, TaskPacketValidationError, ValidatedPacket};
 #[cfg(test)]
 pub use trust_resolver::{TrustConfig, TrustDecision, TrustEvent, TrustPolicy, TrustResolver};
+pub use turn_service::{TurnDreamStatus, TurnService, TurnServiceOutput};
 pub use usage::{
     format_usd, pricing_for_model, ModelPricing, TokenUsage, UsageCostEstimate, UsageTracker,
 };

@@ -142,6 +142,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         resume_supported: true,
     },
     SlashCommandSpec {
+        name: "dream",
+        aliases: &[],
+        summary: "Consolidate project memory logs into MEMORY.md",
+        argument_hint: Some("[--force]"),
+        resume_supported: false,
+    },
+    SlashCommandSpec {
         name: "init",
         aliases: &[],
         summary: "Create a starter CLAUDE.md for this repo",
@@ -1080,6 +1087,9 @@ pub enum SlashCommand {
         target: Option<String>,
     },
     Memory,
+    Dream {
+        force: bool,
+    },
     Init,
     Diff,
     Version,
@@ -1221,6 +1231,7 @@ impl SlashCommand {
             Self::Doctor => "/doctor",
             Self::Config { .. } => "/config",
             Self::Memory { .. } => "/memory",
+            Self::Dream { .. } => "/dream",
             Self::History { .. } => "/history",
             Self::Diff => "/diff",
             Self::Status => "/status",
@@ -1362,6 +1373,9 @@ pub fn validate_slash_command_input(
             validate_no_args(command, &args)?;
             SlashCommand::Memory
         }
+        "dream" => SlashCommand::Dream {
+            force: parse_dream_args(&args)?,
+        },
         "init" => {
             validate_no_args(command, &args)?;
             SlashCommand::Init
@@ -1561,6 +1575,19 @@ fn parse_clear_args(args: &[&str]) -> Result<bool, SlashCommandParseError> {
             "/clear [--confirm]",
         )),
         _ => Err(usage_error("clear", "[--confirm]")),
+    }
+}
+
+fn parse_dream_args(args: &[&str]) -> Result<bool, SlashCommandParseError> {
+    match args {
+        [] => Ok(false),
+        ["--force"] => Ok(true),
+        [unexpected] => Err(command_error(
+            &format!("Unsupported /dream argument '{unexpected}'. Use /dream or /dream --force."),
+            "dream",
+            "/dream [--force]",
+        )),
+        _ => Err(usage_error("dream", "[--force]")),
     }
 }
 
@@ -1880,7 +1907,8 @@ fn slash_command_category(name: &str) -> &'static str {
         "help" | "status" | "cost" | "resume" | "session" | "version" | "usage" | "stats"
         | "rename" | "clear" | "compact" | "history" | "tokens" | "cache" | "exit" | "summary"
         | "tag" | "thinkback" | "copy" | "share" | "feedback" | "rewind" | "pin" | "unpin"
-        | "bookmarks" | "context" | "files" | "focus" | "unfocus" | "retry" | "stop" | "undo" => {
+        | "bookmarks" | "context" | "files" | "focus" | "unfocus" | "retry" | "stop" | "undo"
+        | "dream" => {
             "Session"
         }
         "model" | "permissions" | "config" | "memory" | "theme" | "vim" | "voice" | "color"
@@ -4120,6 +4148,7 @@ pub fn handle_slash_command(
         | SlashCommand::Config { .. }
         | SlashCommand::Mcp { .. }
         | SlashCommand::Memory
+        | SlashCommand::Dream { .. }
         | SlashCommand::Init
         | SlashCommand::Diff
         | SlashCommand::Version
@@ -4442,6 +4471,10 @@ mod tests {
             SlashCommand::parse("/memory"),
             Ok(Some(SlashCommand::Memory))
         );
+        assert_eq!(
+            SlashCommand::parse("/dream --force"),
+            Ok(Some(SlashCommand::Dream { force: true }))
+        );
         assert_eq!(SlashCommand::parse("/init"), Ok(Some(SlashCommand::Init)));
         assert_eq!(SlashCommand::parse("/diff"), Ok(Some(SlashCommand::Diff)));
         assert_eq!(
@@ -4691,6 +4724,7 @@ mod tests {
         assert!(help.contains("/config [env|hooks|model|plugins]"));
         assert!(help.contains("/mcp [list|show <server>|help]"));
         assert!(help.contains("/memory"));
+        assert!(help.contains("/dream [--force]"));
         assert!(help.contains("/init"));
         assert!(help.contains("/diff"));
         assert!(help.contains("/version"));
@@ -4706,7 +4740,7 @@ mod tests {
         assert!(help.contains("aliases: /skill"));
         assert!(!help.contains("/login"));
         assert!(!help.contains("/logout"));
-        assert_eq!(slash_command_specs().len(), 139);
+        assert_eq!(slash_command_specs().len(), 140);
         assert!(resume_supported_slash_commands().len() >= 39);
     }
 

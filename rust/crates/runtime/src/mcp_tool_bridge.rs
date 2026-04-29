@@ -314,7 +314,6 @@ impl McpToolRegistry {
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -332,6 +331,21 @@ mod tests {
             .as_nanos();
         let unique_id = NEXT_TEMP_DIR_ID.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("runtime-mcp-tool-bridge-{nanos}-{unique_id}"))
+    }
+
+    fn make_executable(script_path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(script_path).expect("metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(script_path, permissions).expect("chmod");
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = script_path;
+        }
     }
 
     fn cleanup_script(script_path: &Path) {
@@ -430,9 +444,7 @@ mod tests {
         ]
         .join("\n");
         fs::write(&script_path, script).expect("write script");
-        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions).expect("chmod");
+        make_executable(&script_path);
         script_path
     }
 

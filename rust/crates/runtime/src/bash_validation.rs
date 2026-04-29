@@ -93,9 +93,6 @@ const STATE_MODIFYING_COMMANDS: &[&str] = &[
     "at",
 ];
 
-/// Shell redirection operators that indicate writes.
-const WRITE_REDIRECTIONS: &[&str] = &[">", ">>", ">&"];
-
 /// Validate that a command is allowed under read-only mode.
 ///
 /// Corresponds to upstream `tools/BashTool/readOnlyValidation.ts`.
@@ -141,14 +138,12 @@ pub fn validate_read_only(command: &str, mode: PermissionMode) -> ValidationResu
     }
 
     // Check for write redirections.
-    for &redir in WRITE_REDIRECTIONS {
-        if command.contains(redir) {
-            return ValidationResult::Block {
-                reason: format!(
-                    "Command contains write redirection '{redir}' which is not allowed in read-only mode"
-                ),
-            };
-        }
+    if let Some(redir) = command_has_write_redirect(command) {
+        return ValidationResult::Block {
+            reason: format!(
+                "Command contains write redirection '{redir}' which is not allowed in read-only mode"
+            ),
+        };
     }
 
     // Check for git commands that modify state.
@@ -157,6 +152,44 @@ pub fn validate_read_only(command: &str, mode: PermissionMode) -> ValidationResu
     }
 
     ValidationResult::Allow
+}
+
+/// Scan `command` for a shell write-redirection operator (`>`, `>>`, `>&`).
+///
+/// Returns the matched operator string so the caller can include it in the
+/// error message, or `None` if no write redirect is found.
+///
+/// False-positive avoidance:
+/// - Skips `>` that is immediately preceded by `=` (handles `>=`, `=>`, `awk '{if(a>b)}'`-style).
+/// - Skips `>` inside single- or double-quoted strings.
+fn command_has_write_redirect(command: &str) -> Option<&'static str> {
+    let bytes = command.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'>' if !in_single && !in_double => {
+                // Skip `>` that is part of `=>` or `>=`.
+                let preceded_by_eq = i > 0 && bytes[i - 1] == b'=';
+                if !preceded_by_eq {
+                    // Determine which operator was found.
+                    if bytes.get(i + 1) == Some(&b'>') {
+                        return Some(">>");
+                    } else if bytes.get(i + 1) == Some(&b'&') {
+                        return Some(">&");
+                    } else {
+                        return Some(">");
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Git subcommands that are read-only safe.
@@ -655,17 +688,25 @@ fn extract_first_command(command: &str) -> String {
 }
 
 /// Extract the command following "sudo" (skip sudo flags).
+///
+/// Uses pointer arithmetic to compute the byte offset of each token directly
+/// from the token's position in the original string, avoiding the
+/// `str::find` false-positive when the same word appears earlier in `command`
+/// (e.g. `sudo -u myuser myuser-tool` must start at `myuser-tool`, not the
+/// first occurrence of `myuser`).
 fn extract_sudo_inner(command: &str) -> &str {
+    let base = command.as_ptr() as usize;
     let parts: Vec<&str> = command.split_whitespace().collect();
     let sudo_idx = parts.iter().position(|&p| p == "sudo");
     match sudo_idx {
         Some(idx) => {
-            // Skip flags after sudo.
             let rest = &parts[idx + 1..];
             for &part in rest {
                 if !part.starts_with('-') {
-                    // Found the inner command — return from here to end.
-                    let offset = command.find(part).unwrap_or(0);
+                    // Compute the exact byte offset of this token within
+                    // `command` via pointer arithmetic — safe because every
+                    // &str in `parts` is a subslice of `command`.
+                    let offset = part.as_ptr() as usize - base;
                     return &command[offset..];
                 }
             }

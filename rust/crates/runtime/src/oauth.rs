@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
-use std::fs::{self, File};
-use std::io::{self, Read};
+use std::fs;
+use std::io;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -326,8 +326,46 @@ pub fn parse_oauth_callback_query(query: &str) -> Result<OAuthCallbackParams, St
 
 fn generate_random_token(bytes: usize) -> io::Result<String> {
     let mut buffer = vec![0_u8; bytes];
-    File::open("/dev/urandom")?.read_exact(&mut buffer)?;
+    fill_random_bytes(&mut buffer)?;
     Ok(base64url_encode(&buffer))
+}
+
+/// Fill `buffer` with cryptographically adequate random bytes.
+///
+/// Unix: reads from `/dev/urandom`.
+/// Non-Unix (e.g. Windows): mixes SystemTime + PID + counter through SHA-256.
+/// The non-Unix path is adequate for PKCE tokens but not for key material.
+#[cfg(unix)]
+fn fill_random_bytes(buffer: &mut [u8]) -> io::Result<()> {
+    use std::fs::File;
+    use std::io::Read;
+    File::open("/dev/urandom")?.read_exact(buffer)
+}
+
+#[cfg(not(unix))]
+fn fill_random_bytes(buffer: &mut [u8]) -> io::Result<()> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use sha2::Digest;
+
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let mut idx = 0;
+    while idx < buffer.len() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let pid = u64::from(std::process::id());
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(now.to_le_bytes());
+        hasher.update(seq.to_le_bytes());
+        hasher.update(pid.to_le_bytes());
+        let hash = hasher.finalize();
+        let chunk = hash.len().min(buffer.len() - idx);
+        buffer[idx..idx + chunk].copy_from_slice(&hash[..chunk]);
+        idx += chunk;
+    }
+    Ok(())
 }
 
 fn credentials_home_dir() -> io::Result<PathBuf> {
@@ -376,6 +414,11 @@ fn write_credentials_root(path: &PathBuf, root: &Map<String, Value>) -> io::Resu
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let temp_path = path.with_extension("json.tmp");
     fs::write(&temp_path, format!("{rendered}\n"))?;
+    // On Windows, fs::rename fails with ERROR_ALREADY_EXISTS when the
+    // destination file exists. Remove it first so the rename is atomic on
+    // POSIX and best-effort on Windows (small race window on Windows only).
+    #[cfg(windows)]
+    let _ = fs::remove_file(path);
     fs::rename(temp_path, path)
 }
 

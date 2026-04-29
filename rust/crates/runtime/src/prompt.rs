@@ -4,13 +4,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::{ConfigError, ConfigLoader, RuntimeConfig};
+use crate::dreamer::DreamerError;
 use crate::git_context::GitContext;
+use crate::MemoryManager;
 
 /// Errors raised while assembling the final system prompt.
 #[derive(Debug)]
 pub enum PromptBuildError {
     Io(std::io::Error),
     Config(ConfigError),
+    Memory(DreamerError),
 }
 
 impl std::fmt::Display for PromptBuildError {
@@ -18,6 +21,7 @@ impl std::fmt::Display for PromptBuildError {
         match self {
             Self::Io(error) => write!(f, "{error}"),
             Self::Config(error) => write!(f, "{error}"),
+            Self::Memory(error) => write!(f, "{error}"),
         }
     }
 }
@@ -33,6 +37,12 @@ impl From<std::io::Error> for PromptBuildError {
 impl From<ConfigError> for PromptBuildError {
     fn from(value: ConfigError) -> Self {
         Self::Config(value)
+    }
+}
+
+impl From<DreamerError> for PromptBuildError {
+    fn from(value: DreamerError) -> Self {
+        Self::Memory(value)
     }
 }
 
@@ -100,6 +110,7 @@ pub struct SystemPromptBuilder {
     append_sections: Vec<String>,
     project_context: Option<ProjectContext>,
     config: Option<RuntimeConfig>,
+    memory_prompt: Option<String>,
 }
 
 impl SystemPromptBuilder {
@@ -135,6 +146,12 @@ impl SystemPromptBuilder {
     }
 
     #[must_use]
+    pub fn with_memory_prompt(mut self, memory_prompt: Option<String>) -> Self {
+        self.memory_prompt = memory_prompt;
+        self
+    }
+
+    #[must_use]
     pub fn append_section(mut self, section: impl Into<String>) -> Self {
         self.append_sections.push(section.into());
         self
@@ -157,6 +174,9 @@ impl SystemPromptBuilder {
             if !project_context.instruction_files.is_empty() {
                 sections.push(render_instruction_files(&project_context.instruction_files));
             }
+        }
+        if let Some(memory_prompt) = &self.memory_prompt {
+            sections.push(memory_prompt.clone());
         }
         if let Some(config) = &self.config {
             sections.push(render_config_section(config));
@@ -438,9 +458,12 @@ pub fn load_system_prompt(
     let cwd = cwd.into();
     let project_context = ProjectContext::discover_with_git(&cwd, current_date.into())?;
     let config = ConfigLoader::default_for(&cwd).load()?;
+    let memory_prompt =
+        MemoryManager::new(cwd.clone(), config.memory().clone()).load_memory_prompt()?;
     Ok(SystemPromptBuilder::new()
         .with_os(os_name, os_version)
         .with_project_context(project_context)
+        .with_memory_prompt(memory_prompt)
         .with_runtime_config(config)
         .build())
 }
@@ -825,6 +848,50 @@ mod tests {
 
         assert!(prompt.contains("Project rules"));
         assert!(prompt.contains("permissionMode"));
+        fs::remove_dir_all(root).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn load_system_prompt_includes_memory_when_enabled() {
+        let root = temp_dir();
+        fs::create_dir_all(root.join(".claw").join("memory")).expect("memory dir");
+        fs::create_dir_all(root.join(".claw")).expect("claw dir");
+        fs::write(
+            root.join(".claw").join("settings.json"),
+            r#"{"autoMemoryEnabled":true}"#,
+        )
+        .expect("write settings");
+        fs::write(
+            root.join(".claw").join("memory").join("MEMORY.md"),
+            "# Memory\n\n- Prefer focused Rust changes.",
+        )
+        .expect("write memory");
+
+        let _guard = env_lock();
+        ensure_valid_cwd();
+        let previous = std::env::current_dir().expect("cwd");
+        let original_home = std::env::var("HOME").ok();
+        let original_claw_home = std::env::var("CLAW_CONFIG_HOME").ok();
+        std::env::set_var("HOME", &root);
+        std::env::set_var("CLAW_CONFIG_HOME", root.join("missing-home"));
+        std::env::set_current_dir(&root).expect("change cwd");
+        let prompt = super::load_system_prompt(&root, "2026-03-31", "linux", "6.8")
+            .expect("system prompt should load")
+            .join("\n\n");
+        std::env::set_current_dir(previous).expect("restore cwd");
+        if let Some(value) = original_home {
+            std::env::set_var("HOME", value);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(value) = original_claw_home {
+            std::env::set_var("CLAW_CONFIG_HOME", value);
+        } else {
+            std::env::remove_var("CLAW_CONFIG_HOME");
+        }
+
+        assert!(prompt.contains("# Persistent Memory"));
+        assert!(prompt.contains("Prefer focused Rust changes."));
         fs::remove_dir_all(root).expect("cleanup temp dir");
     }
 

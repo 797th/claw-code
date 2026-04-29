@@ -103,32 +103,56 @@ pub fn execute_bash(input: BashCommandInput) -> io::Result<BashCommandOutput> {
     runtime.block_on(execute_bash_async(input, sandbox_status, cwd))
 }
 
-/// Detect git push to main and emit ship provenance event
+/// Detect git push to main/master and emit ship provenance event.
+///
+/// Parses the command as whitespace-delimited tokens and only fires when the
+/// command is structurally `git push [...flags] [remote] <refspec>` where the
+/// refspec targets `main` or `master`. This avoids false-positives from grep,
+/// log tailing, or other commands that happen to contain those substrings.
 fn detect_and_emit_ship_prepared(command: &str) {
-    let trimmed = command.trim();
-    // Simple detection: git push with main/master
-    if trimmed.contains("git push") && (trimmed.contains("main") || trimmed.contains("master")) {
-        // Emit ship.prepared event
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let provenance = ShipProvenance {
-            source_branch: get_current_branch().unwrap_or_else(|| "unknown".to_string()),
-            base_commit: get_head_commit().unwrap_or_default(),
-            commit_count: 0, // Would need to calculate from range
-            commit_range: "unknown..HEAD".to_string(),
-            merge_method: ShipMergeMethod::DirectPush,
-            actor: get_git_actor().unwrap_or_else(|| "unknown".to_string()),
-            pr_number: None,
-        };
-        let _event = LaneEvent::ship_prepared(format!("{}", now), &provenance);
-        // Log to stderr as interim routing before event stream integration
-        eprintln!(
-            "[ship.prepared] branch={} -> main, commits={}, actor={}",
-            provenance.source_branch, provenance.commit_count, provenance.actor
-        );
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    // Require `git` followed immediately by `push`.
+    let Some(git_idx) = tokens.iter().position(|&t| t == "git") else {
+        return;
+    };
+    if tokens.get(git_idx + 1) != Some(&"push") {
+        return;
     }
+    // Scan remaining tokens for a branch name that targets main or master.
+    // Flags start with `-`; refspecs can be `main`, `master`, `HEAD:main`, etc.
+    let targets_main = tokens[git_idx + 2..].iter().any(|&t| {
+        !t.starts_with('-')
+            && (t == "main" || t == "master" || t.ends_with(":main") || t.ends_with(":master"))
+    });
+    if !targets_main {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let provenance = ShipProvenance {
+        source_branch: get_current_branch().unwrap_or_else(|| "unknown".to_string()),
+        base_commit: get_head_commit().unwrap_or_default(),
+        commit_count: 0,
+        commit_range: "unknown..HEAD".to_string(),
+        merge_method: ShipMergeMethod::DirectPush,
+        actor: get_git_actor().unwrap_or_else(|| "unknown".to_string()),
+        pr_number: None,
+    };
+    // TODO: route event to the event stream once integration is complete.
+    let event = LaneEvent::ship_prepared(format!("{now}"), &provenance);
+    eprintln!(
+        "[ship.prepared] branch={} -> main, commits={}, actor={}, fingerprint={}",
+        provenance.source_branch,
+        provenance.commit_count,
+        provenance.actor,
+        event
+            .metadata
+            .event_fingerprint
+            .as_deref()
+            .unwrap_or("none"),
+    );
 }
 
 fn get_current_branch() -> Option<String> {

@@ -429,7 +429,14 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
     let bytes = fs::read(path).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    match serde_json::from_slice(&bytes) {
+        Ok(value) => Some(value),
+        Err(err) => {
+            // Surface cache corruption so it's observable without being fatal.
+            eprintln!("[prompt-cache] failed to parse {}: {err}", path.display());
+            None
+        }
+    }
 }
 
 fn request_hash_hex(request: &MessageRequest) -> String {
@@ -440,8 +447,13 @@ fn request_hash_hex(request: &MessageRequest) -> String {
 }
 
 fn hash_serializable<T: Serialize>(value: &T) -> u64 {
-    let json = serde_json::to_vec(value).unwrap_or_default();
-    stable_hash_bytes(&json)
+    // unwrap_or_default() would hash an empty slice — every value that fails to
+    // serialize would get the same hash (FNV offset basis), causing false cache
+    // hits. Use u64::MAX as a distinct sentinel instead.
+    match serde_json::to_vec(value) {
+        Ok(json) => stable_hash_bytes(&json),
+        Err(_) => u64::MAX,
+    }
 }
 
 fn sanitize_path_segment(value: &str) -> String {

@@ -66,12 +66,16 @@ pub fn build_http_client() -> Result<reqwest::Client, ApiError> {
 
 /// Infallible counterpart to [`build_http_client`] for constructors that
 /// historically returned `Self` rather than `Result<Self, _>`. When the proxy
-/// configuration is malformed we fall back to a default client so that
-/// callers retain the previous behaviour and the failure surfaces on the
-/// first outbound request instead of at construction time.
+/// configuration is malformed we log a warning and fall back to a default
+/// client (no proxy) so callers retain the previous behaviour.
 #[must_use]
 pub fn build_http_client_or_default() -> reqwest::Client {
-    build_http_client().unwrap_or_else(|_| reqwest::Client::new())
+    build_http_client().unwrap_or_else(|err| {
+        eprintln!(
+            "[http-client] proxy configuration error — falling back to no-proxy client: {err}"
+        );
+        reqwest::Client::new()
+    })
 }
 
 /// Build a `reqwest::Client` from an explicit [`ProxyConfig`]. Used by tests

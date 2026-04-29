@@ -543,13 +543,16 @@ impl Session {
             return Ok(());
         };
 
-        let needs_bootstrap = !path.exists() || fs::metadata(path)?.len() == 0;
+        // Open with create+append in one syscall to avoid a TOCTOU race between
+        // checking existence and opening. Inspect the already-open handle's
+        // length to decide whether a full bootstrap write is needed.
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        let needs_bootstrap = file.metadata()?.len() == 0;
         if needs_bootstrap {
             self.save_to_path(path)?;
             return Ok(());
         }
 
-        let mut file = OpenOptions::new().append(true).open(path)?;
         writeln!(file, "{}", message_record(message).render())?;
         Ok(())
     }
@@ -562,13 +565,13 @@ impl Session {
             return Ok(());
         };
 
-        let needs_bootstrap = !path.exists() || fs::metadata(path)?.len() == 0;
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        let needs_bootstrap = file.metadata()?.len() == 0;
         if needs_bootstrap {
             self.save_to_path(path)?;
             return Ok(());
         }
 
-        let mut file = OpenOptions::new().append(true).open(path)?;
         writeln!(file, "{}", entry.to_jsonl_record().render())?;
         Ok(())
     }

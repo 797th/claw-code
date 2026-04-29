@@ -47,9 +47,9 @@ use runtime::{
     load_system_prompt, pricing_for_model, resolve_expected_base, resolve_sandbox_status,
     ApiClient, ApiRequest, AssistantEvent, CompactionConfig, ConfigLoader, ConfigSource,
     ContentBlock, ConversationMessage, ConversationRuntime, McpServer, McpServerManager,
-    McpServerSpec, McpTool, MessageRole, ModelPricing, PermissionMode, PermissionPolicy,
-    ProjectContext, PromptCacheEvent, ResolvedPermissionMode, RuntimeError, Session, TokenUsage,
-    ToolError, ToolExecutor, UsageTracker,
+    McpServerSpec, McpTool, MemoryManager, MessageRole, ModelPricing, PermissionMode,
+    PermissionPolicy, ProjectContext, PromptCacheEvent, ResolvedPermissionMode, RuntimeError,
+    Session, TokenUsage, ToolError, ToolExecutor, UsageTracker,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -3576,6 +3576,7 @@ fn run_resume_command(
         | SlashCommand::Ultraplan { .. }
         | SlashCommand::Teleport { .. }
         | SlashCommand::DebugToolCall { .. }
+        | SlashCommand::Dream { .. }
         | SlashCommand::Resume { .. }
         | SlashCommand::Model { .. }
         | SlashCommand::Permissions { .. }
@@ -4402,10 +4403,110 @@ impl LiveCli {
         Ok((runtime, hook_abort_monitor))
     }
 
+    fn prepare_dream_runtime(&self) -> Result<BuiltRuntime, Box<dyn std::error::Error>> {
+        build_runtime(
+            self.runtime.session().clone(),
+            &self.session.id,
+            self.model.clone(),
+            Vec::new(),
+            false,
+            false,
+            None,
+            self.permission_mode,
+            None,
+        )
+    }
+
+    fn memory_manager(&self) -> Result<MemoryManager, Box<dyn std::error::Error>> {
+        let cwd = env::current_dir()?;
+        let config = ConfigLoader::default_for(&cwd).load()?;
+        Ok(MemoryManager::new(cwd, config.memory().clone()))
+    }
+
     fn replace_runtime(&mut self, runtime: BuiltRuntime) -> Result<(), Box<dyn std::error::Error>> {
         self.runtime.shutdown_plugins()?;
         self.runtime = runtime;
         Ok(())
+    }
+
+    fn run_dream(&mut self, force: bool) -> Result<(), Box<dyn std::error::Error>> {
+        let manager = self.memory_manager()?;
+        let memory_dir = manager.memory_dir();
+        let mut runtime = self.prepare_dream_runtime()?;
+        let result = manager.run_dream(runtime.api_client_mut(), force);
+        runtime.shutdown_plugins()?;
+
+        match result {
+            Ok(run) => {
+                self.system_prompt = build_system_prompt()?;
+                println!(
+                    "Dream complete\n  Memory dir      {}\n  Files written   {}\n  Logs read       {}\n  Input bytes     {}",
+                    run.memory_dir.display(),
+                    run.files_written.len(),
+                    run.log_count,
+                    run.input_bytes
+                );
+                for path in run.files_written {
+                    println!("  - {}", path.display());
+                }
+            }
+            Err(runtime::DreamerError::NoLogs) => {
+                println!(
+                    "Dream skipped\n  Reason          no memory logs found\n  Memory dir      {}",
+                    memory_dir.display()
+                );
+            }
+            Err(runtime::DreamerError::Locked) => {
+                println!(
+                    "Dream skipped\n  Reason          consolidation already running\n  Memory dir      {}",
+                    memory_dir.display()
+                );
+            }
+            Err(error) => return Err(Box::new(error)),
+        }
+        Ok(())
+    }
+
+    fn maybe_auto_dream_after_success(&mut self) {
+        let Ok(manager) = self.memory_manager() else {
+            return;
+        };
+        if !manager.config().auto_dream_enabled() {
+            return;
+        }
+        let Ok(cwd) = env::current_dir() else {
+            return;
+        };
+        let mut runtime = match self.prepare_dream_runtime() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("auto-dream skipped: {error}");
+                return;
+            }
+        };
+        let result = runtime::maybe_run_auto_dream(
+            &manager.dream_config(),
+            &cwd,
+            true,
+            runtime.api_client_mut(),
+        );
+        let shutdown_result = runtime.shutdown_plugins();
+        match (result, shutdown_result) {
+            (Ok(Some(run)), Ok(())) => {
+                if let Ok(system_prompt) = build_system_prompt() {
+                    self.system_prompt = system_prompt;
+                }
+                eprintln!(
+                    "auto-dream complete: wrote {} file(s) from {} log(s)",
+                    run.files_written.len(),
+                    run.log_count
+                );
+            }
+            (Ok(None), Ok(())) | (Err(runtime::DreamerError::NoLogs), Ok(())) => {}
+            (Err(runtime::DreamerError::Locked), Ok(())) => {}
+            (Err(error), Ok(())) => eprintln!("auto-dream skipped: {error}"),
+            (_, Err(error)) => eprintln!("auto-dream cleanup failed: {error}"),
+        }
     }
 
     fn run_turn(&mut self, input: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -4436,6 +4537,7 @@ impl LiveCli {
                     );
                 }
                 self.persist_session()?;
+                self.maybe_auto_dream_after_success();
                 Ok(())
             }
             Err(error) => {
@@ -4615,6 +4717,10 @@ impl LiveCli {
             }
             SlashCommand::Memory => {
                 Self::print_memory()?;
+                false
+            }
+            SlashCommand::Dream { force } => {
+                self.run_dream(force)?;
                 false
             }
             SlashCommand::Init => {
@@ -6178,12 +6284,24 @@ fn render_config_json(
 fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
     let project_context = ProjectContext::discover(&cwd, DEFAULT_DATE)?;
+    let runtime_config = ConfigLoader::default_for(&cwd).load()?;
+    let manager = MemoryManager::new(cwd.clone(), runtime_config.memory().clone());
+    let memory_dir = manager.memory_dir();
+    let memory_file = memory_dir.join(runtime::MEMORY_FILENAME);
+    let memory_status = fs::read_to_string(&memory_file).ok().map_or_else(
+        || "not found".to_string(),
+        |content| format!("{} lines", content.lines().count()),
+    );
     let mut lines = vec![format!(
         "Memory
   Working directory {}
-  Instruction files {}",
+  Instruction files {}
+  Memory dir       {}
+  MEMORY.md        {}",
         cwd.display(),
-        project_context.instruction_files.len()
+        project_context.instruction_files.len(),
+        memory_dir.display(),
+        memory_status
     )];
     if project_context.instruction_files.is_empty() {
         lines.push("Discovered files".to_string());
@@ -6217,6 +6335,13 @@ fn render_memory_report() -> Result<String, Box<dyn std::error::Error>> {
 fn render_memory_json() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let cwd = env::current_dir()?;
     let project_context = ProjectContext::discover(&cwd, DEFAULT_DATE)?;
+    let runtime_config = ConfigLoader::default_for(&cwd).load()?;
+    let manager = MemoryManager::new(cwd.clone(), runtime_config.memory().clone());
+    let memory_dir = manager.memory_dir();
+    let memory_file = memory_dir.join(runtime::MEMORY_FILENAME);
+    let memory_lines = fs::read_to_string(&memory_file)
+        .ok()
+        .map(|content| content.lines().count());
     let files: Vec<_> = project_context
         .instruction_files
         .iter()
@@ -6231,6 +6356,9 @@ fn render_memory_json() -> Result<serde_json::Value, Box<dyn std::error::Error>>
     Ok(json!({
         "kind": "memory",
         "cwd": cwd.display().to_string(),
+        "memory_dir": memory_dir.display().to_string(),
+        "memory_file": memory_file.display().to_string(),
+        "memory_lines": memory_lines,
         "instruction_files": files.len(),
         "files": files,
     }))
@@ -12125,6 +12253,10 @@ UU conflicted.rs",
         assert_eq!(
             SlashCommand::parse("/memory"),
             Ok(Some(SlashCommand::Memory))
+        );
+        assert_eq!(
+            SlashCommand::parse("/dream --force"),
+            Ok(Some(SlashCommand::Dream { force: true }))
         );
         assert_eq!(SlashCommand::parse("/init"), Ok(Some(SlashCommand::Init)));
         assert_eq!(
